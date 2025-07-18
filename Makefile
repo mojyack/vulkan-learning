@@ -13,7 +13,7 @@ clean:
 
 shaders: build/vert.spv build/frag.spv
 
-build/vk: build/main.o
+build/vk: vk.hpp build/main.o
 	$(CXX) $(LDFLAGS) -lglfw -lvulkan $^ -o $@
 
 build/%.o: %.cpp

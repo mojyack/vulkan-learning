@@ -1,0 +1,47 @@
+#pragma once
+#include <memory>
+#include <optional>
+#include <vector>
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+#include "macros/assert.hpp"
+
+namespace vk {
+inline auto default_instance = VkInstance();
+inline auto default_device   = VkDevice();
+
+#define declare_autoptr(Name, Type, func)                 \
+    struct Name##Deleter {                                \
+        static auto operator()(Type* const ptr) -> void { \
+            func;                                         \
+        }                                                 \
+    };                                                    \
+    using Auto##Name = std::unique_ptr<Type, Name##Deleter>;
+
+declare_autoptr(VkInstance, VkInstance_T, vkDestroyInstance(ptr, nullptr));
+declare_autoptr(VkDevice, VkDevice_T, vkDestroyDevice(ptr, nullptr));
+declare_autoptr(VkSurface, VkSurfaceKHR_T, vkDestroySurfaceKHR(default_instance, ptr, nullptr));
+declare_autoptr(VkSwapchain, VkSwapchainKHR_T, vkDestroySwapchainKHR(default_device, ptr, nullptr));
+declare_autoptr(VkImageView, VkImageView_T, vkDestroyImageView(default_device, ptr, nullptr));
+declare_autoptr(VkShaderModule, VkShaderModule_T, vkDestroyShaderModule(default_device, ptr, nullptr));
+declare_autoptr(VkPipelineLayout, VkPipelineLayout_T, vkDestroyPipelineLayout(default_device, ptr, nullptr));
+declare_autoptr(VkRenderPass, VkRenderPass_T, vkDestroyRenderPass(default_device, ptr, nullptr));
+declare_autoptr(VkPipeline, VkPipeline_T, vkDestroyPipeline(default_device, ptr, nullptr));
+declare_autoptr(VkFramebuffer, VkFramebuffer_T, vkDestroyFramebuffer(default_device, ptr, nullptr));
+declare_autoptr(VkCommandPool, VkCommandPool_T, vkDestroyCommandPool(default_device, ptr, nullptr));
+declare_autoptr(VkSemaphore, VkSemaphore_T, vkDestroySemaphore(default_device, ptr, nullptr));
+declare_autoptr(VkFence, VkFence_T, vkDestroyFence(default_device, ptr, nullptr));
+
+template <class T>
+auto query_array(auto func) -> std::optional<std::vector<T>> {
+    auto count = uint32_t(0);
+    ensure(func(&count, nullptr) == VK_SUCCESS);
+    auto arr = std::vector<T>(count);
+    if(count > 0) {
+        ensure(func(&count, arr.data()) == VK_SUCCESS);
+    }
+    return arr;
+}
+} // namespace vk

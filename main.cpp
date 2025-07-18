@@ -1,4 +1,3 @@
-#include <memory>
 #include <ranges>
 #include <vector>
 
@@ -12,44 +11,9 @@
 
 #include "macros/unwrap.hpp"
 #include "util/file-io.hpp"
+#include "vk.hpp"
 
 namespace {
-auto vk_instance = VkInstance();
-auto vk_device   = VkDevice();
-
-#define declare_autoptr2(Name, Type, func)                \
-    struct Name##Deleter {                                \
-        static auto operator()(Type* const ptr) -> void { \
-            func;                                         \
-        }                                                 \
-    };                                                    \
-    using Auto##Name = std::unique_ptr<Type, Name##Deleter>;
-
-declare_autoptr2(VkInstance, VkInstance_T, vkDestroyInstance(ptr, nullptr));
-declare_autoptr2(VkDevice, VkDevice_T, vkDestroyDevice(ptr, nullptr));
-declare_autoptr2(VkSurface, VkSurfaceKHR_T, vkDestroySurfaceKHR(vk_instance, ptr, nullptr));
-declare_autoptr2(VkSwapchain, VkSwapchainKHR_T, vkDestroySwapchainKHR(vk_device, ptr, nullptr));
-declare_autoptr2(VkImageView, VkImageView_T, vkDestroyImageView(vk_device, ptr, nullptr));
-declare_autoptr2(VkShaderModule, VkShaderModule_T, vkDestroyShaderModule(vk_device, ptr, nullptr));
-declare_autoptr2(VkPipelineLayout, VkPipelineLayout_T, vkDestroyPipelineLayout(vk_device, ptr, nullptr));
-declare_autoptr2(VkRenderPass, VkRenderPass_T, vkDestroyRenderPass(vk_device, ptr, nullptr));
-declare_autoptr2(VkPipeline, VkPipeline_T, vkDestroyPipeline(vk_device, ptr, nullptr));
-declare_autoptr2(VkFramebuffer, VkFramebuffer_T, vkDestroyFramebuffer(vk_device, ptr, nullptr));
-declare_autoptr2(VkCommandPool, VkCommandPool_T, vkDestroyCommandPool(vk_device, ptr, nullptr));
-declare_autoptr2(VkSemaphore, VkSemaphore_T, vkDestroySemaphore(vk_device, ptr, nullptr));
-declare_autoptr2(VkFence, VkFence_T, vkDestroyFence(vk_device, ptr, nullptr));
-
-template <class T>
-auto vk_enum(auto func) -> std::optional<std::vector<T>> {
-    auto count = uint32_t(0);
-    ensure(func(&count, nullptr) == VK_SUCCESS);
-    auto arr = std::vector<T>(count);
-    if(count > 0) {
-        ensure(func(&count, arr.data()) == VK_SUCCESS);
-    }
-    return arr;
-}
-
 auto has_ext(std::span<const VkExtensionProperties> exts, std::string_view req) -> bool {
     for(const auto ext : exts) {
         if(ext.extensionName == req) {
@@ -67,9 +31,9 @@ struct SwapchainDetail {
     static auto query(VkPhysicalDevice device, VkSurfaceKHR surface) -> std::optional<SwapchainDetail> {
         auto ret = SwapchainDetail();
         ensure(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &ret.caps) == VK_SUCCESS);
-        unwrap_mut(formats, vk_enum<VkSurfaceFormatKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, args...); }));
+        unwrap_mut(formats, vk::query_array<VkSurfaceFormatKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, args...); }));
         ret.formats = std::move(formats);
-        unwrap_mut(modes, vk_enum<VkPresentModeKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, args...); }));
+        unwrap_mut(modes, vk::query_array<VkPresentModeKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, args...); }));
         ret.modes = std::move(modes);
         return ret;
     }
@@ -89,7 +53,7 @@ auto create_shader_module(const VkDevice device, const char* const spv_file) -> 
 }
 
 auto vulkan_main(GLFWwindow& window) -> bool {
-    unwrap(exts, vk_enum<VkExtensionProperties>([](auto... args) { return vkEnumerateInstanceExtensionProperties(nullptr, args...); }));
+    unwrap(exts, vk::query_array<VkExtensionProperties>([](auto... args) { return vkEnumerateInstanceExtensionProperties(nullptr, args...); }));
     PRINT("exts={}", exts.size());
 
     // init vulkan
@@ -125,17 +89,17 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         instance_create_info.enabledLayerCount = 0;
     }
 
-    auto instance = AutoVkInstance();
+    auto instance = vk::AutoVkInstance();
     ensure(vkCreateInstance(&instance_create_info, nullptr, std::inout_ptr(instance)) == VK_SUCCESS);
-    ::vk_instance = instance.get();
+    vk::default_instance = instance.get();
 
     // create window surface
-    auto surface = AutoVkSurface();
+    auto surface = vk::AutoVkSurface();
     ensure(glfwCreateWindowSurface(instance.get(), &window, nullptr, std::inout_ptr(surface)) == VK_SUCCESS);
 
     // pickup phy
     static const auto required_exts = std::array{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-    unwrap(devices, vk_enum<VkPhysicalDevice>([instance = instance.get()](auto... args) { return vkEnumeratePhysicalDevices(instance, args...); }));
+    unwrap(devices, vk::query_array<VkPhysicalDevice>([instance = instance.get()](auto... args) { return vkEnumeratePhysicalDevices(instance, args...); }));
     ensure(!devices.empty());
 
     auto phy = VkPhysicalDevice(VK_NULL_HANDLE);
@@ -144,7 +108,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         auto feats = VkPhysicalDeviceFeatures();
         vkGetPhysicalDeviceProperties(dev, &props);
         vkGetPhysicalDeviceFeatures(dev, &feats);
-        unwrap(exts, vk_enum<VkExtensionProperties>([dev](auto... args) { return vkEnumerateDeviceExtensionProperties(dev, nullptr, args...); }));
+        unwrap(exts, vk::query_array<VkExtensionProperties>([dev](auto... args) { return vkEnumerateDeviceExtensionProperties(dev, nullptr, args...); }));
         PRINT("dev: name={} version={} exts={}", props.deviceName, props.apiVersion, exts.size());
         if(props.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             continue;
@@ -169,7 +133,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     ensure(phy != VK_NULL_HANDLE);
 
     // setup queue
-    unwrap(queue_families, vk_enum<VkQueueFamilyProperties>([phy](auto... args) {vkGetPhysicalDeviceQueueFamilyProperties(phy, args...); return VK_SUCCESS; }));
+    unwrap(queue_families, vk::query_array<VkQueueFamilyProperties>([phy](auto... args) {vkGetPhysicalDeviceQueueFamilyProperties(phy, args...); return VK_SUCCESS; }));
     PRINT("queues={}", queue_families.size());
     auto graphics_queue_index = -1;
     auto present_queue_index  = -1;
@@ -210,10 +174,10 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .pEnabledFeatures        = &device_features,
     };
 
-    auto device = AutoVkDevice();
+    auto device = vk::AutoVkDevice();
     ensure(vkCreateDevice(phy, &device_create_info, nullptr, std::inout_ptr(device)) == VK_SUCCESS);
     PRINT("logical device created");
-    ::vk_device = device.get(); // for deleters
+    vk::default_device = device.get();
 
     // retrieve queue handle
     auto graphics_queue = VkQueue();
@@ -269,16 +233,16 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
-    auto swapchain = AutoVkSwapchain();
+    auto swapchain = vk::AutoVkSwapchain();
     ensure(vkCreateSwapchainKHR(device.get(), &swapchain_create_info, nullptr, std::inout_ptr(swapchain)) == VK_SUCCESS);
     PRINT("swapchain created");
 
     // retrieve images from swapchain
-    unwrap(swapchain_images, vk_enum<VkImage>([&](auto... args) { return vkGetSwapchainImagesKHR(device.get(), swapchain.get(), args...); }));
+    unwrap(swapchain_images, vk::query_array<VkImage>([&](auto... args) { return vkGetSwapchainImagesKHR(device.get(), swapchain.get(), args...); }));
     PRINT("images={}", swapchain_images.size());
 
     // create image views
-    auto image_views = std::vector<AutoVkImageView>(swapchain_images.size());
+    auto image_views = std::vector<vk::AutoVkImageView>(swapchain_images.size());
     for(auto&& [image, view] : std::ranges::zip_view(swapchain_images, image_views)) {
         const auto create_info = VkImageViewCreateInfo{
             .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -303,9 +267,9 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     }
 
     // create shaders
-    auto vert_shader = AutoVkShaderModule(create_shader_module(device.get(), "build/vert.spv"));
+    auto vert_shader = vk::AutoVkShaderModule(create_shader_module(device.get(), "build/vert.spv"));
     ensure(vert_shader);
-    auto frag_shader = AutoVkShaderModule(create_shader_module(device.get(), "build/frag.spv"));
+    auto frag_shader = vk::AutoVkShaderModule(create_shader_module(device.get(), "build/frag.spv"));
     ensure(frag_shader);
 
     const auto shader_stages = std::array<VkPipelineShaderStageCreateInfo, 2>{{
@@ -396,7 +360,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     auto pipeline_layout_create_info = VkPipelineLayoutCreateInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     };
-    auto pipeline_layout = AutoVkPipelineLayout();
+    auto pipeline_layout = vk::AutoVkPipelineLayout();
     ensure(vkCreatePipelineLayout(device.get(), &pipeline_layout_create_info, nullptr, std::inout_ptr(pipeline_layout)) == VK_SUCCESS);
 
     // attachments
@@ -438,7 +402,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .dependencyCount = 1,
         .pDependencies   = &subpass_dep,
     };
-    auto render_pass = AutoVkRenderPass();
+    auto render_pass = vk::AutoVkRenderPass();
     ensure(vkCreateRenderPass(device.get(), &render_pass_create_info, nullptr, std::inout_ptr(render_pass)) == VK_SUCCESS);
 
     // pipeline
@@ -458,11 +422,11 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .renderPass          = render_pass.get(),
         .subpass             = 0,
     };
-    auto pipeline = AutoVkPipeline();
+    auto pipeline = vk::AutoVkPipeline();
     ensure(vkCreateGraphicsPipelines(device.get(), VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, std::inout_ptr(pipeline)) == VK_SUCCESS);
 
     // wrap swapchain images to framebuffers
-    auto framebuffers = std::vector<AutoVkFramebuffer>(swapchain_images.size());
+    auto framebuffers = std::vector<vk::AutoVkFramebuffer>(swapchain_images.size());
     for(auto&& [fb, image] : std::ranges::zip_view(framebuffers, image_views)) {
         const auto attachments = std::array{image.get()};
         const auto create_info = VkFramebufferCreateInfo{
@@ -485,7 +449,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         .queueFamilyIndex = uint32_t(graphics_queue_index),
     };
-    auto command_pool = AutoVkCommandPool();
+    auto command_pool = vk::AutoVkCommandPool();
     ensure(vkCreateCommandPool(device.get(), &command_pool_create_info, nullptr, std::inout_ptr(command_pool)) == VK_SUCCESS);
     // command buffer
     const auto command_buffer_alloc_info = VkCommandBufferAllocateInfo{
@@ -547,9 +511,9 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    auto image_avail_semaphores     = std::array<AutoVkSemaphore, max_frames_in_flight>();
-    auto render_finished_semaphores = std::array<AutoVkSemaphore, max_frames_in_flight>();
-    auto in_flight_fences           = std::array<AutoVkFence, max_frames_in_flight>();
+    auto image_avail_semaphores     = std::array<vk::AutoVkSemaphore, max_frames_in_flight>();
+    auto render_finished_semaphores = std::array<vk::AutoVkSemaphore, max_frames_in_flight>();
+    auto in_flight_fences           = std::array<vk::AutoVkFence, max_frames_in_flight>();
     for(auto i = 0; i < max_frames_in_flight; i += 1) {
         ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(image_avail_semaphores[i])) == VK_SUCCESS);
         ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(render_finished_semaphores[i])) == VK_SUCCESS);
