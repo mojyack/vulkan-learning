@@ -387,7 +387,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     ensure(vkCreateGraphicsPipelines(device.get(), VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, std::inout_ptr(pipeline)) == VK_SUCCESS);
 
     // wrap swapchain images to framebuffers
-    auto framebuffers = std::vector<vk::AutoVkFramebuffer>(swapchain_images.size());
+    auto framebuffers = std::vector<vk::AutoVkFramebuffer>(image_views.size());
     for(auto&& [fb, image] : std::ranges::zip_view(framebuffers, image_views)) {
         const auto attachments = std::array{image.get()};
         const auto create_info = VkFramebufferCreateInfo{

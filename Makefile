@@ -6,7 +6,7 @@ CXXFLAGS += -std=c++23
 
 .PHONY: all clean shaders
 
-all: shaders build/vk
+all: shaders build/vk build/vk2
 
 clean:
 	rm -rf build
@@ -14,6 +14,9 @@ clean:
 shaders: build/vert.spv build/frag.spv
 
 build/vk: build/vk.o build/main.o
+	$(CXX) $(LDFLAGS) -lglfw -lvulkan $^ -o $@
+
+build/vk2: build/vk.o build/main2.o
 	$(CXX) $(LDFLAGS) -lglfw -lvulkan $^ -o $@
 
 build/%.o: %.cpp
