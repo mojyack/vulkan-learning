@@ -508,6 +508,7 @@ struct Context {
     uint32_t                           graphics_queue_index;
     uint32_t                           present_queue_index;
     vk::AutoVkDevice                   device;
+    SwapchainParams                    swapchain_params;
     vk::AutoVkSwapchain                swapchain;
     std::vector<vk::AutoVkImageView>   swapchain_images;
     vk::AutoVkShaderModule             vertex_shader;
@@ -521,10 +522,52 @@ struct Context {
     std::vector<vk::AutoVkSemaphore>   image_avail_semaphores;
     std::vector<vk::AutoVkSemaphore>   render_finished_semaphores;
     std::vector<vk::AutoVkFence>       in_flight_fences;
+    bool                               window_resized = false;
 };
+
+auto on_window_resize(GLFWwindow* window, int width, int height) -> void {
+    auto& context = *std::bit_cast<Context*>(glfwGetWindowUserPointer(window));
+    PRINT("window resized {}x{}", width, height);
+    context.window_resized = true;
+}
+
+auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
+    PRINT("recreating swapchain");
+
+    // handle minimization
+    {
+        auto width  = 0;
+        auto height = 0;
+        glfwGetFramebufferSize(&window, &width, &height);
+        while(width == 0 || height == 0) {
+            glfwGetFramebufferSize(&window, &width, &height);
+            glfwWaitEvents();
+        }
+    }
+
+    context.framebuffers.clear();
+    context.swapchain_images.clear();
+    context.swapchain.reset();
+
+    ensure(vkDeviceWaitIdle(context.device.get()) == VK_SUCCESS);
+    const auto queue_indices = std::array{context.graphics_queue_index, context.present_queue_index};
+    unwrap(swapchain_params, find_optimal_swapchain_params(window, context.phy, context.surface.get()));
+    context.swapchain_params = swapchain_params;
+    unwrap_mut(swapchain, create_swapchain(context.device.get(), context.surface.get(), queue_indices, context.swapchain_params));
+    context.swapchain.reset(&swapchain);
+    unwrap_mut(swapchain_images, create_image_views(context.device.get(), context.swapchain.get(), context.swapchain_params.format.format));
+    context.swapchain_images = std::move(swapchain_images);
+    unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), context.swapchain_params.extent));
+    context.framebuffers = std::move(framebuffers);
+    return true;
+}
 
 auto vulkan_main(GLFWwindow& window) -> bool {
     auto context = Context();
+
+    glfwSetWindowUserPointer(&window, &context);
+    glfwSetFramebufferSizeCallback(&window, on_window_resize);
+
     {
         unwrap_mut(instance, create_instance());
         context.instance.reset(&instance);
@@ -547,13 +590,16 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         unwrap_mut(device, create_device(context.phy, queue_indices));
         context.device.reset(&device);
     }
-    unwrap(swapchain_params, find_optimal_swapchain_params(window, context.phy, context.surface.get()));
     {
-        unwrap_mut(swapchain, create_swapchain(context.device.get(), context.surface.get(), queue_indices, swapchain_params));
+        unwrap(swapchain_params, find_optimal_swapchain_params(window, context.phy, context.surface.get()));
+        context.swapchain_params = swapchain_params;
+    }
+    {
+        unwrap_mut(swapchain, create_swapchain(context.device.get(), context.surface.get(), queue_indices, context.swapchain_params));
         context.swapchain.reset(&swapchain);
     }
     {
-        unwrap_mut(swapchain_images, create_image_views(context.device.get(), context.swapchain.get(), swapchain_params.format.format));
+        unwrap_mut(swapchain_images, create_image_views(context.device.get(), context.swapchain.get(), context.swapchain_params.format.format));
         context.swapchain_images = std::move(swapchain_images);
     }
     {
@@ -563,7 +609,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.fragment_shader.reset(&frag);
     }
     {
-        unwrap_mut(render_pass, create_render_pass(context.device.get(), swapchain_params.format.format));
+        unwrap_mut(render_pass, create_render_pass(context.device.get(), context.swapchain_params.format.format));
         context.render_pass.reset(&render_pass);
     }
     {
@@ -571,11 +617,11 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.pipeline_layout.reset(&pipeline_layout);
     }
     {
-        unwrap_mut(pipeline, create_pipeline(context.device.get(), context.render_pass.get(), context.pipeline_layout.get(), swapchain_params.extent, context.vertex_shader.get(), context.fragment_shader.get()));
+        unwrap_mut(pipeline, create_pipeline(context.device.get(), context.render_pass.get(), context.pipeline_layout.get(), context.swapchain_params.extent, context.vertex_shader.get(), context.fragment_shader.get()));
         context.pipeline.reset(&pipeline);
     }
     {
-        unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), swapchain_params.extent));
+        unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), context.swapchain_params.extent));
         context.framebuffers = std::move(framebuffers);
     }
     {
@@ -610,14 +656,21 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         // wait for previous command completion
         const auto fence = context.in_flight_fences[current_frame].get();
         ensure(vkWaitForFences(context.device.get(), 1, &fence, VK_TRUE, uint64_max) == VK_SUCCESS);
-        ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
+
         // acquire image from swapchain
         auto image_index = uint32_t();
-        ensure(vkAcquireNextImageKHR(context.device.get(), context.swapchain.get(), uint64_max, context.image_avail_semaphores[current_frame].get(), VK_NULL_HANDLE, &image_index) == VK_SUCCESS || true /* TODO: handle error*/);
-        PRINT("image={}", image_index);
+        if(const auto ret = vkAcquireNextImageKHR(context.device.get(), context.swapchain.get(), uint64_max, context.image_avail_semaphores[current_frame].get(), VK_NULL_HANDLE, &image_index); ret == VK_ERROR_OUT_OF_DATE_KHR) {
+            ensure(recreate_swapchain(window, context));
+            continue;
+        } else {
+            ensure(ret == VK_SUCCESS || ret == VK_SUBOPTIMAL_KHR, "result={:x}", uint32_t(ret));
+        }
+
+        ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
+
         // fill command buffer
         ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
-        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), context.framebuffers[image_index].get(), swapchain_params.extent, context.command_buffers[current_frame], image_index));
+        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
@@ -633,6 +686,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
                   .pSignalSemaphores    = signal_semaphores.data(),
         };
         ensure(vkQueueSubmit(graphics_queue, 1, &submit_info, context.in_flight_fences[current_frame].get()) == VK_SUCCESS);
+
         // present rendered image
         const auto swapchains   = std::array{context.swapchain.get()};
         const auto present_info = VkPresentInfoKHR{
@@ -643,7 +697,13 @@ auto vulkan_main(GLFWwindow& window) -> bool {
             .pSwapchains        = swapchains.data(),
             .pImageIndices      = &image_index,
         };
-        ensure(vkQueuePresentKHR(present_queue, &present_info) == VK_SUCCESS);
+
+        if(const auto ret = vkQueuePresentKHR(present_queue, &present_info); ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR || context.window_resized) {
+            ensure(recreate_swapchain(window, context));
+            context.window_resized = false;
+        } else {
+            ensure(ret == VK_SUCCESS, "result={:x}", uint32_t(ret));
+        }
         current_frame = (current_frame + 1) % max_frames_in_flight;
     }
 
@@ -656,7 +716,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 auto main() -> int {
     ensure(glfwInit() == GLFW_TRUE);
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    // glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     unwrap_mut(window, glfwCreateWindow(800, 600, "vk", nullptr, nullptr));
     ensure(vulkan_main(window));
     glfwDestroyWindow(&window);
