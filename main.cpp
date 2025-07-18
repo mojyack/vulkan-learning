@@ -478,6 +478,8 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     }
 
     // command pool
+    constexpr auto max_frames_in_flight = 2;
+
     const auto command_pool_create_info = VkCommandPoolCreateInfo{
         .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -490,10 +492,10 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool        = command_pool.get(),
         .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = max_frames_in_flight,
     };
-    auto command_buffer = VkCommandBuffer();
-    ensure(vkAllocateCommandBuffers(device.get(), &command_buffer_alloc_info, &command_buffer) == VK_SUCCESS);
+    auto command_buffers = std::array<VkCommandBuffer, max_frames_in_flight>();
+    ensure(vkAllocateCommandBuffers(device.get(), &command_buffer_alloc_info, command_buffers.data()) == VK_SUCCESS);
 
     const auto record_command_buffer = [&](VkCommandBuffer command_buffer, uint32_t index) -> bool {
         constexpr auto error_value = false;
@@ -545,44 +547,47 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    auto image_avail_semaphore     = AutoVkSemaphore();
-    auto render_finished_semaphore = AutoVkSemaphore();
-    auto in_flight_fence           = AutoVkFence();
-    ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(image_avail_semaphore)) == VK_SUCCESS);
-    ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(render_finished_semaphore)) == VK_SUCCESS);
-    ensure(vkCreateFence(device.get(), &fence_create_info, nullptr, std::inout_ptr(in_flight_fence)) == VK_SUCCESS);
+    auto image_avail_semaphores     = std::array<AutoVkSemaphore, max_frames_in_flight>();
+    auto render_finished_semaphores = std::array<AutoVkSemaphore, max_frames_in_flight>();
+    auto in_flight_fences           = std::array<AutoVkFence, max_frames_in_flight>();
+    for(auto i = 0; i < max_frames_in_flight; i += 1) {
+        ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(image_avail_semaphores[i])) == VK_SUCCESS);
+        ensure(vkCreateSemaphore(device.get(), &semaphore_create_info, nullptr, std::inout_ptr(render_finished_semaphores[i])) == VK_SUCCESS);
+        ensure(vkCreateFence(device.get(), &fence_create_info, nullptr, std::inout_ptr(in_flight_fences[i])) == VK_SUCCESS);
+    }
 
+    auto current_frame = uint32_t(0);
     while(!glfwWindowShouldClose(&window)) {
         glfwPollEvents();
 
         constexpr auto uint64_max = std::numeric_limits<uint64_t>::max();
 
         // wait for previous command completion
-        const auto fence = in_flight_fence.get();
+        const auto fence = in_flight_fences[current_frame].get();
         ensure(vkWaitForFences(device.get(), 1, &fence, VK_TRUE, uint64_max) == VK_SUCCESS);
         ensure(vkResetFences(device.get(), 1, &fence) == VK_SUCCESS);
         // acquire image from swapchain
         auto image_index = uint32_t();
-        ensure(vkAcquireNextImageKHR(device.get(), swapchain.get(), uint64_max, image_avail_semaphore.get(), VK_NULL_HANDLE, &image_index) == VK_SUCCESS || true /* TODO: handle error*/);
+        ensure(vkAcquireNextImageKHR(device.get(), swapchain.get(), uint64_max, image_avail_semaphores[current_frame].get(), VK_NULL_HANDLE, &image_index) == VK_SUCCESS || true /* TODO: handle error*/);
         PRINT("image={}", image_index);
         // fill command buffer
-        ensure(vkResetCommandBuffer(command_buffer, 0) == VK_SUCCESS);
-        ensure(record_command_buffer(command_buffer, image_index));
+        ensure(vkResetCommandBuffer(command_buffers[current_frame], 0) == VK_SUCCESS);
+        ensure(record_command_buffer(command_buffers[current_frame], image_index));
         // submit command
-        const auto wait_semaphores   = std::array{image_avail_semaphore.get()};
+        const auto wait_semaphores   = std::array{image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
-        const auto signal_semaphores = std::array{render_finished_semaphore.get()};
+        const auto signal_semaphores = std::array{render_finished_semaphores[current_frame].get()};
         const auto submit_info       = VkSubmitInfo{
                   .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                   .waitSemaphoreCount   = 1,
                   .pWaitSemaphores      = wait_semaphores.data(),
                   .pWaitDstStageMask    = wait_stages.data(),
                   .commandBufferCount   = 1,
-                  .pCommandBuffers      = &command_buffer,
+                  .pCommandBuffers      = &command_buffers[current_frame],
                   .signalSemaphoreCount = 1,
                   .pSignalSemaphores    = signal_semaphores.data(),
         };
-        ensure(vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fence.get()) == VK_SUCCESS);
+        ensure(vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fences[current_frame].get()) == VK_SUCCESS);
         // present rendered image
         const auto swapchains   = std::array{swapchain.get()};
         const auto present_info = VkPresentInfoKHR{
@@ -594,6 +599,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
             .pImageIndices      = &image_index,
         };
         ensure(vkQueuePresentKHR(present_queue, &present_info) == VK_SUCCESS);
+        current_frame = (current_frame + 1) % max_frames_in_flight;
     }
 
     ensure(vkDeviceWaitIdle(device.get()) == VK_SUCCESS);
