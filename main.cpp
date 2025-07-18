@@ -10,48 +10,9 @@
 #include <glm/vec4.hpp>
 
 #include "macros/unwrap.hpp"
-#include "util/file-io.hpp"
 #include "vk.hpp"
 
 namespace {
-auto has_ext(std::span<const VkExtensionProperties> exts, std::string_view req) -> bool {
-    for(const auto ext : exts) {
-        if(ext.extensionName == req) {
-            return true;
-        }
-    }
-    return false;
-}
-
-struct SwapchainDetail {
-    VkSurfaceCapabilitiesKHR        caps;
-    std::vector<VkSurfaceFormatKHR> formats;
-    std::vector<VkPresentModeKHR>   modes;
-
-    static auto query(VkPhysicalDevice device, VkSurfaceKHR surface) -> std::optional<SwapchainDetail> {
-        auto ret = SwapchainDetail();
-        ensure(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &ret.caps) == VK_SUCCESS);
-        unwrap_mut(formats, vk::query_array<VkSurfaceFormatKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, args...); }));
-        ret.formats = std::move(formats);
-        unwrap_mut(modes, vk::query_array<VkPresentModeKHR>([=](auto... args) { return vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, args...); }));
-        ret.modes = std::move(modes);
-        return ret;
-    }
-};
-
-auto create_shader_module(const VkDevice device, const char* const spv_file) -> VkShaderModule {
-    constexpr auto error_value = nullptr;
-    unwrap_v(code, read_file(spv_file));
-    const auto create_info = VkShaderModuleCreateInfo{
-        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = code.size(),
-        .pCode    = std::bit_cast<uint32_t*>(code.data()),
-    };
-    auto shader_module = VkShaderModule();
-    ensure_v(vkCreateShaderModule(device, &create_info, nullptr, &shader_module) == VK_SUCCESS);
-    return shader_module;
-}
-
 auto vulkan_main(GLFWwindow& window) -> bool {
     unwrap(exts, vk::query_array<VkExtensionProperties>([](auto... args) { return vkEnumerateInstanceExtensionProperties(nullptr, args...); }));
     PRINT("exts={}", exts.size());
@@ -118,12 +79,12 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         }
         auto exts_complete = true;
         for(const auto req : required_exts) {
-            exts_complete &= has_ext(exts, req);
+            exts_complete &= vk::has_ext(exts, req);
         }
         if(!exts_complete) {
             continue;
         }
-        unwrap(sc, SwapchainDetail::query(dev, surface.get()));
+        unwrap(sc, vk::SwapchainDetail::query(dev, surface.get()));
         if(sc.formats.empty() || sc.modes.empty()) {
             continue;
         }
@@ -186,7 +147,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     vkGetDeviceQueue(device.get(), present_queue_index, 0, &present_queue);
 
     // decide swapchain params
-    unwrap(swapchain_detail, SwapchainDetail::query(phy, surface.get()));
+    unwrap(swapchain_detail, vk::SwapchainDetail::query(phy, surface.get()));
     auto swapchain_format = swapchain_detail.formats[0];
     for(const auto& format : swapchain_detail.formats) {
         if(format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -267,9 +228,9 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     }
 
     // create shaders
-    auto vert_shader = vk::AutoVkShaderModule(create_shader_module(device.get(), "build/vert.spv"));
+    auto vert_shader = vk::AutoVkShaderModule(vk::create_shader_module(device.get(), "build/vert.spv"));
     ensure(vert_shader);
-    auto frag_shader = vk::AutoVkShaderModule(create_shader_module(device.get(), "build/frag.spv"));
+    auto frag_shader = vk::AutoVkShaderModule(vk::create_shader_module(device.get(), "build/frag.spv"));
     ensure(frag_shader);
 
     const auto shader_stages = std::array<VkPipelineShaderStageCreateInfo, 2>{{

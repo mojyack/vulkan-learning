@@ -44,4 +44,15 @@ auto query_array(auto func) -> std::optional<std::vector<T>> {
     }
     return arr;
 }
+
+auto has_ext(std::span<const VkExtensionProperties> exts, std::string_view req) -> bool;
+auto create_shader_module(VkDevice device, const char* spv_file) -> VkShaderModule;
+
+struct SwapchainDetail {
+    VkSurfaceCapabilitiesKHR        caps;
+    std::vector<VkSurfaceFormatKHR> formats;
+    std::vector<VkPresentModeKHR>   modes;
+
+    static auto query(VkPhysicalDevice device, VkSurfaceKHR surface) -> std::optional<SwapchainDetail>;
+};
 } // namespace vk
