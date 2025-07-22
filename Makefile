@@ -13,11 +13,11 @@ clean:
 
 shaders: build/vert.spv build/frag.spv
 
-build/vk: build/vk.o build/main.o
+build/vk: build/vk.o  build/main.o build/vert.spv build/frag.spv
 	$(CXX) $(LDFLAGS) -lglfw -lvulkan $^ -o $@
 
-build/vk2: build/vk.o build/main2.o
-	$(CXX) $(LDFLAGS) -lglfw -lvulkan $^ -o $@
+build/vk2: build/vk.o build/main2.o build/vert.spv build/frag.spv
+	$(CXX) $(LDFLAGS) -lglfw -lvulkan $(filter %.o,$^) -o $@
 
 build/%.o: %.cpp
 	mkdir -p $(dir $@)
