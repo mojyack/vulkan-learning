@@ -1,0 +1,25 @@
+flowchart TD
+    GLFWwindow --> VkSurface
+    VkInstance -->|glfwCreateWindowSurface| VkSurface
+    VkInstance -->|vkEnumeratePhysicalDevices| VkPhysicalDevice@{ shape: processes }
+    VkPhysicalDevice -->|vkCreateDevice| VkDevice
+    VkDevice -->|vkGetDeviceQueue| VkQueue@{ shape: processes, label: "VkQueue(graphics,present)" }
+    VkSurface & VkQueue -.-> swapchain_info
+    swapchain_info -->|device.vkCreateSwapchainKHR| VkSwapChain
+    VkSwapChain -->|vkGetSwapchainImagesKHR| VkImage@{ shape: processes }
+    VkImage -->|vkCreateImageView| VkImageView@{ shape: processes }
+    VkDevice -->|vkCreateShaderModule| VkShaderModule@{ shape: processes, label: "VkShaderModule(vertex,fragment)" }
+    VkDevice -->|vkCreatePipelineLayout| VkPipelineLayout
+    VkSwapChain -.->|.format| VkAttachmentDescriptionColor["VkAttachmentDescription(color)"]
+    VkAttachmentDescriptionColor -.-> VkAttachmentReference
+    VkAttachmentReference -.-> VkSubpassDescription
+    VkSubpassDependency & VkSubpassDescription -.-> render_pass_info
+    render_pass_info -->|device.vkCreateRenderPass| VkRenderPass
+    VkShaderModule & VkPipelineLayout & VkRenderPass -.-> pipeline_info
+    pipeline_info -->|device.vkCreateGraphicsPipeline| VkPipeline
+    VkImageView & VkRenderPass -.-> framebuffer_info
+    VkSwapChain -.->|.extent| framebuffer_info
+    framebuffer_info -.->|device.vkCreateFramebuffer| VkFramebuffer@{ shape: processes }
+    VkQueue -.->|"[graphics]"| command_pool_info
+    command_pool_info -->|device.vkCreateCommandPool| VkCommandPool
+    VkCommandPool -->|device.vkAllocateCommandBuffers| VkCommandBuffer 
