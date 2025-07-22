@@ -33,6 +33,20 @@ declare_autoptr(VkFramebuffer, VkFramebuffer_T, vkDestroyFramebuffer(default_dev
 declare_autoptr(VkCommandPool, VkCommandPool_T, vkDestroyCommandPool(default_device, ptr, nullptr));
 declare_autoptr(VkSemaphore, VkSemaphore_T, vkDestroySemaphore(default_device, ptr, nullptr));
 declare_autoptr(VkFence, VkFence_T, vkDestroyFence(default_device, ptr, nullptr));
+declare_autoptr(VkBuffer, VkBuffer_T, vkDestroyBuffer(default_device, ptr, nullptr));
+declare_autoptr(VkDeviceMemory, VkDeviceMemory_T, vkFreeMemory(default_device, ptr, nullptr));
+
+struct MemoryMapping {
+    VkDevice       device;
+    VkDeviceMemory memory;
+    void*          ptr = nullptr;
+
+    static auto map(VkDevice device, VkDeviceMemory memory, size_t size) -> std::optional<MemoryMapping>;
+
+    MemoryMapping() = default;
+    MemoryMapping(MemoryMapping&& other);
+    ~MemoryMapping();
+};
 
 template <class T>
 auto query_array(auto func) -> std::optional<std::vector<T>> {

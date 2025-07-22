@@ -3,6 +3,26 @@
 #include "util/file-io.hpp"
 
 namespace vk {
+auto MemoryMapping::map(VkDevice device, VkDeviceMemory memory, size_t size) -> std::optional<MemoryMapping> {
+    auto ret   = MemoryMapping();
+    ret.device = device;
+    ret.memory = memory;
+    ensure(vkMapMemory(device, memory, 0, size, 0, &ret.ptr) == VK_SUCCESS);
+    return ret;
+}
+
+MemoryMapping::MemoryMapping(MemoryMapping&& other) {
+    std::swap(device, other.device);
+    std::swap(memory, other.memory);
+    std::swap(ptr, other.ptr);
+}
+
+MemoryMapping::~MemoryMapping() {
+    if(ptr != nullptr) {
+        vkUnmapMemory(device, memory);
+    }
+}
+
 auto has_ext(std::span<const VkExtensionProperties> exts, std::string_view req) -> bool {
     for(const auto ext : exts) {
         if(ext.extensionName == req) {

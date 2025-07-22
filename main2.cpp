@@ -1,13 +1,47 @@
 #include <ranges>
+#include <cstring>
 #include <vector>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 
 #include "macros/unwrap.hpp"
 #include "vk.hpp"
 
 namespace {
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+};
+
+const auto vertex_binding_desc = VkVertexInputBindingDescription{
+    .binding   = 0,
+    .stride    = sizeof(Vertex),
+    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+};
+
+const auto vertex_attr_desc = std::array{
+    VkVertexInputAttributeDescription{
+        .location = 0,
+        .binding  = 0,
+        .format   = VK_FORMAT_R32G32_SFLOAT,
+        .offset   = offsetof(Vertex, pos),
+    },
+    VkVertexInputAttributeDescription{
+        .location = 1,
+        .binding  = 0,
+        .format   = VK_FORMAT_R32G32B32_SFLOAT,
+        .offset   = offsetof(Vertex, color),
+    },
+};
+
+const auto vertices = std::array{
+    Vertex{{0.0, -0.5}, {1, 0, 0}},
+    Vertex{{0.5, 0.5}, {0, 1, 0}},
+    Vertex{{-0.5, 0.5}, {0, 0, 1}},
+};
+
 constexpr auto invalid_queue_index = (uint32_t)-1;
 
 const auto required_exts = std::array{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -290,14 +324,6 @@ auto create_render_pass(VkDevice device, VkFormat format) -> VkRenderPass_T* {
 }
 
 auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout pipeline_layout, VkExtent2D swapchain_extent, VkShaderModule vertex_shader, VkShaderModule fragment_shader) -> VkPipeline_T* {
-    // vertex input
-    const auto vertex_input_state_create_info = VkPipelineVertexInputStateCreateInfo{
-        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount   = 0,
-        .pVertexBindingDescriptions      = nullptr,
-        .vertexAttributeDescriptionCount = 0,
-        .pVertexAttributeDescriptions    = nullptr,
-    };
     // input assembly
     const auto input_assembly_create_info = VkPipelineInputAssemblyStateCreateInfo{
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -361,6 +387,13 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
     };
 
     // pipeline
+    const auto vertex_input_state_create_info = VkPipelineVertexInputStateCreateInfo{
+        .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount   = 1,
+        .pVertexBindingDescriptions      = &vertex_binding_desc,
+        .vertexAttributeDescriptionCount = uint32_t(vertex_attr_desc.size()),
+        .pVertexAttributeDescriptions    = vertex_attr_desc.data(),
+    };
     const auto shader_stages = std::array<VkPipelineShaderStageCreateInfo, 2>{{
         {
             .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -415,6 +448,48 @@ auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> i
     return framebuffers;
 }
 
+auto create_vertex_buffer(VkDevice device) -> VkBuffer_T* {
+    const auto buffer_create_info = VkBufferCreateInfo{
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = sizeof(Vertex) * vertices.size(),
+        .usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    auto buffer = VkBuffer();
+    ensure(vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer) == VK_SUCCESS);
+    return buffer;
+}
+
+auto find_memory_type(VkPhysicalDevice phy, uint32_t type_filter, VkMemoryPropertyFlags properties) -> std::optional<uint32_t> {
+    auto memory_properties = VkPhysicalDeviceMemoryProperties();
+    vkGetPhysicalDeviceMemoryProperties(phy, &memory_properties);
+    for(auto i = 0u; i < memory_properties.memoryTypeCount; i += 1) {
+        if(!(type_filter & (1 << i))) {
+            continue;
+        }
+        if((memory_properties.memoryTypes[i].propertyFlags & properties) != properties) {
+            continue;
+        }
+        return i;
+    }
+    bail("failed to find suitable memory type");
+}
+
+auto allocate_device_memory_for_buffer(VkPhysicalDevice phy, VkDevice device, VkBuffer buffer) -> VkDeviceMemory_T* {
+    auto requirements = VkMemoryRequirements();
+    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+
+    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+    auto alloc_info = VkMemoryAllocateInfo{
+        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize  = requirements.size,
+        .memoryTypeIndex = memory_type,
+    };
+    auto memory = VkDeviceMemory();
+    ensure(vkAllocateMemory(device, &alloc_info, nullptr, &memory) == VK_SUCCESS);
+    return memory;
+}
+
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
     const auto command_pool_create_info = VkCommandPoolCreateInfo{
         .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -461,7 +536,7 @@ auto create_fences(VkDevice device, uint32_t count, bool signaled) -> std::optio
     return ret;
 }
 
-auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkFramebuffer framebuffer, VkExtent2D extent, VkCommandBuffer command_buffer, uint32_t index) -> bool {
+auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkBuffer vertex_buffer, VkFramebuffer framebuffer, VkExtent2D extent, VkCommandBuffer command_buffer, uint32_t index) -> bool {
     const auto command_buffer_info = VkCommandBufferBeginInfo{
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = 0,
@@ -481,6 +556,9 @@ auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkFram
     };
     vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    const auto vertex_buffers = std::array{vertex_buffer};
+    const auto offsets = std::array {VkDeviceSize(0)};
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
     const auto viewport = VkViewport{
         .x        = 0,
         .y        = 0,
@@ -495,7 +573,7 @@ auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkFram
         .extent = extent,
     };
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    vkCmdDraw(command_buffer, vertices.size(), 1, 0, 0);
     vkCmdEndRenderPass(command_buffer);
     ensure(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
     return true;
@@ -517,6 +595,8 @@ struct Context {
     vk::AutoVkRenderPass               render_pass;
     vk::AutoVkPipeline                 pipeline;
     std::vector<vk::AutoVkFramebuffer> framebuffers;
+    vk::AutoVkBuffer                   vertex_buffer;
+    vk::AutoVkDeviceMemory             vertex_memory;
     vk::AutoVkCommandPool              command_pool;
     std::vector<VkCommandBuffer>       command_buffers;
     std::vector<vk::AutoVkSemaphore>   image_avail_semaphores;
@@ -625,6 +705,20 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.framebuffers = std::move(framebuffers);
     }
     {
+        unwrap_mut(vertex_buffer, create_vertex_buffer(context.device.get()));
+        context.vertex_buffer.reset(&vertex_buffer);
+    }
+    {
+        unwrap_mut(vertex_memory, allocate_device_memory_for_buffer(context.phy, context.device.get(), context.vertex_buffer.get()));
+        context.vertex_memory.reset(&vertex_memory);
+    }
+    ensure(vkBindBufferMemory(context.device.get(), context.vertex_buffer.get(), context.vertex_memory.get(), 0) == VK_SUCCESS);
+    {
+        const auto size = sizeof(Vertex) * vertices.size();
+        unwrap_mut(mapping, vk::MemoryMapping::map(context.device.get(), context.vertex_memory.get(), size));
+        std::memcpy(mapping.ptr, vertices.data(), size);
+    }
+    {
         unwrap_mut(command_pool, create_command_pool(context.device.get(), context.graphics_queue_index));
         context.command_pool.reset(&command_pool);
     }
@@ -670,7 +764,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
         // fill command buffer
         ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
-        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
+        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), context.vertex_buffer.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
