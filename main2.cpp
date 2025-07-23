@@ -152,17 +152,16 @@ auto create_device(VkPhysicalDevice phy, std::span<const uint32_t> queue_indices
             .pQueuePriorities = &queue_priority,
         });
     }
-    const auto device_features    = VkPhysicalDeviceFeatures{};
-    const auto device_create_info = VkDeviceCreateInfo{
-        .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount    = uint32_t(queue_create_infos.size()),
-        .pQueueCreateInfos       = queue_create_infos.data(),
-        .enabledExtensionCount   = required_exts.size(),
-        .ppEnabledExtensionNames = required_exts.data(),
-        .pEnabledFeatures        = &device_features,
-    };
-
-    ensure(vkCreateDevice(phy, &device_create_info, nullptr, &vk::default_device) == VK_SUCCESS);
+    const auto device_features = VkPhysicalDeviceFeatures{};
+    vk_args(vkCreateDevice(phy, &info, nullptr, &vk::default_device),
+            (VkDeviceCreateInfo{
+                .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                .queueCreateInfoCount    = uint32_t(queue_create_infos.size()),
+                .pQueueCreateInfos       = queue_create_infos.data(),
+                .enabledExtensionCount   = required_exts.size(),
+                .ppEnabledExtensionNames = required_exts.data(),
+                .pEnabledFeatures        = &device_features,
+            }));
     PRINT("logical device created");
     return vk::default_device;
 }
@@ -245,36 +244,36 @@ auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkForma
     // create image views
     auto image_views = std::vector<vk::AutoVkImageView>(swapchain_images.size());
     for(auto&& [image, view] : std::ranges::zip_view(swapchain_images, image_views)) {
-        const auto create_info = VkImageViewCreateInfo{
-            .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image      = image,
-            .viewType   = VK_IMAGE_VIEW_TYPE_2D,
-            .format     = swapchain_format,
-            .components = {
-                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = {
-                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel   = 0,
-                .levelCount     = 1,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            },
-        };
-        ensure(vkCreateImageView(device, &create_info, nullptr, std::inout_ptr(view)) == VK_SUCCESS);
+        vk_args(vkCreateImageView(device, &info, nullptr, std::inout_ptr(view)),
+                (VkImageViewCreateInfo{
+                    .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                    .image      = image,
+                    .viewType   = VK_IMAGE_VIEW_TYPE_2D,
+                    .format     = swapchain_format,
+                    .components = {
+                        .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                        .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                        .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                        .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    },
+                    .subresourceRange = {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel   = 0,
+                        .levelCount     = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+                }));
     }
     return image_views;
 }
 
 auto create_pipeline_layout(VkDevice device) -> VkPipelineLayout_T* {
-    auto pipeline_layout_create_info = VkPipelineLayoutCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-    };
     auto pipeline_layout = VkPipelineLayout();
-    ensure(vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr, &pipeline_layout) == VK_SUCCESS);
+    vk_args(vkCreatePipelineLayout(device, &info, nullptr, &pipeline_layout),
+            (VkPipelineLayoutCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            }));
     return pipeline_layout;
 }
 
@@ -310,17 +309,17 @@ auto create_render_pass(VkDevice device, VkFormat format) -> VkRenderPass_T* {
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
     };
 
-    const auto render_pass_create_info = VkRenderPassCreateInfo{
-        .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments    = &color_attachment,
-        .subpassCount    = 1,
-        .pSubpasses      = &subpass,
-        .dependencyCount = 1,
-        .pDependencies   = &subpass_dep,
-    };
     auto render_pass = VkRenderPass();
-    ensure(vkCreateRenderPass(device, &render_pass_create_info, nullptr, &render_pass) == VK_SUCCESS);
+    vk_args(vkCreateRenderPass(device, &info, nullptr, &render_pass),
+            (VkRenderPassCreateInfo{
+                .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                .attachmentCount = 1,
+                .pAttachments    = &color_attachment,
+                .subpassCount    = 1,
+                .pSubpasses      = &subpass,
+                .dependencyCount = 1,
+                .pDependencies   = &subpass_dep,
+            }));
     return render_pass;
 }
 
@@ -410,24 +409,24 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
         },
     }};
 
-    const auto pipeline_create_info = VkGraphicsPipelineCreateInfo{
-        .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount          = uint32_t(shader_stages.size()),
-        .pStages             = shader_stages.data(),
-        .pVertexInputState   = &vertex_input_state_create_info,
-        .pInputAssemblyState = &input_assembly_create_info,
-        .pViewportState      = &viewport_state_create_info,
-        .pRasterizationState = &rasterizer_state_create_info,
-        .pMultisampleState   = &multisample_state_create_info,
-        .pDepthStencilState  = nullptr,
-        .pColorBlendState    = &color_blend_state_create_info,
-        .pDynamicState       = &dynamic_state_create_info,
-        .layout              = pipeline_layout,
-        .renderPass          = render_pass,
-        .subpass             = 0,
-    };
     auto pipeline = VkPipeline();
-    ensure(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline) == VK_SUCCESS);
+    vk_args(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline),
+            (VkGraphicsPipelineCreateInfo{
+                .sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                .stageCount          = uint32_t(shader_stages.size()),
+                .pStages             = shader_stages.data(),
+                .pVertexInputState   = &vertex_input_state_create_info,
+                .pInputAssemblyState = &input_assembly_create_info,
+                .pViewportState      = &viewport_state_create_info,
+                .pRasterizationState = &rasterizer_state_create_info,
+                .pMultisampleState   = &multisample_state_create_info,
+                .pDepthStencilState  = nullptr,
+                .pColorBlendState    = &color_blend_state_create_info,
+                .pDynamicState       = &dynamic_state_create_info,
+                .layout              = pipeline_layout,
+                .renderPass          = render_pass,
+                .subpass             = 0,
+            }));
     return pipeline;
 }
 
@@ -435,16 +434,16 @@ auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> i
     auto framebuffers = std::vector<vk::AutoVkFramebuffer>(image_views.size());
     for(auto&& [fb, image] : std::ranges::zip_view(framebuffers, image_views)) {
         const auto attachments = std::array{image.get()};
-        const auto create_info = VkFramebufferCreateInfo{
-            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass      = render_pass,
-            .attachmentCount = uint32_t(attachments.size()),
-            .pAttachments    = attachments.data(),
-            .width           = swapchain_extent.width,
-            .height          = swapchain_extent.height,
-            .layers          = 1,
-        };
-        ensure(vkCreateFramebuffer(device, &create_info, nullptr, std::inout_ptr(fb)) == VK_SUCCESS);
+        vk_args(vkCreateFramebuffer(device, &info, nullptr, std::inout_ptr(fb)),
+                (VkFramebufferCreateInfo{
+                    .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                    .renderPass      = render_pass,
+                    .attachmentCount = uint32_t(attachments.size()),
+                    .pAttachments    = attachments.data(),
+                    .width           = swapchain_extent.width,
+                    .height          = swapchain_extent.height,
+                    .layers          = 1,
+                }));
     }
     return framebuffers;
 }
@@ -475,29 +474,29 @@ struct CreateBufferResult {
     vk::AutoVkDeviceMemory memory;
 };
 
-auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo info) -> std::optional<CreateBufferResult> {
+auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo create_info) -> std::optional<CreateBufferResult> {
     // create buffer
-    const auto buffer_create_info = VkBufferCreateInfo{
-        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size        = info.size,
-        .usage       = info.usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
     auto buffer = vk::AutoVkBuffer();
-    ensure(vkCreateBuffer(device, &buffer_create_info, nullptr, std::inout_ptr(buffer)) == VK_SUCCESS);
+    vk_args(vkCreateBuffer(device, &info, nullptr, std::inout_ptr(buffer)),
+            (VkBufferCreateInfo{
+                .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size        = create_info.size,
+                .usage       = create_info.usage,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            }));
 
     // allocate memory
     auto requirements = VkMemoryRequirements();
     vkGetBufferMemoryRequirements(device, buffer.get(), &requirements);
 
-    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, info.props));
-    auto alloc_info = VkMemoryAllocateInfo{
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = requirements.size,
-        .memoryTypeIndex = memory_type,
-    };
+    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, create_info.props));
     auto memory = vk::AutoVkDeviceMemory();
-    ensure(vkAllocateMemory(device, &alloc_info, nullptr, std::inout_ptr(memory)) == VK_SUCCESS);
+    vk_args(vkAllocateMemory(device, &info, nullptr, std::inout_ptr(memory)),
+            (VkMemoryAllocateInfo{
+                .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize  = requirements.size,
+                .memoryTypeIndex = memory_type,
+            }));
 
     // bind them
     ensure(vkBindBufferMemory(device, buffer.get(), memory.get(), 0) == VK_SUCCESS);
@@ -506,46 +505,28 @@ auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo info)
 }
 
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
-    const auto command_pool_create_info = VkCommandPoolCreateInfo{
-        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        .queueFamilyIndex = uint32_t(graphics_queue_index),
-    };
     auto command_pool = VkCommandPool();
-    ensure(vkCreateCommandPool(device, &command_pool_create_info, nullptr, &command_pool) == VK_SUCCESS);
+    vk_args(vkCreateCommandPool(device, &info, nullptr, &command_pool),
+            (VkCommandPoolCreateInfo{
+                .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = uint32_t(graphics_queue_index),
+            }));
     return command_pool;
 }
 
 auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint32_t count) -> std::optional<std::vector<VkCommandBuffer>> {
     // TODO: should call vkFreeCommandBuffers
-    const auto command_buffer_alloc_info = VkCommandBufferAllocateInfo{
-        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool        = command_pool,
-        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = count,
-    };
     auto command_buffers = std::vector<VkCommandBuffer>(count);
-    ensure(vkAllocateCommandBuffers(device, &command_buffer_alloc_info, command_buffers.data()) == VK_SUCCESS);
+    vk_args(vkAllocateCommandBuffers(device, &info, command_buffers.data()),
+            (VkCommandBufferAllocateInfo{
+                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool        = command_pool,
+                .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = count,
+            }));
     return command_buffers;
 }
-
-struct S {
-    int a, b;
-};
-
-auto f(const S* p) -> int;
-
-#define vk_call(func, s)            \
-    {                               \
-        const auto info = s;        \
-        ensure(func == VK_SUCCESS); \
-    }
-
-#define vk_callv(func, s)    \
-    {                        \
-        const auto info = s; \
-        func;                \
-    }
 
 struct CopyBufferInfo {
     VkCommandPool command_pool;
@@ -559,17 +540,17 @@ auto copy_buffer(VkDevice device, CopyBufferInfo copy_info) -> bool {
     unwrap(command_buffers, allocate_command_buffers(device, copy_info.command_pool, 1));
     const auto command_buffers_cleaner = Cleaner{[&] { vkFreeCommandBuffers(device, copy_info.command_pool, command_buffers.size(), command_buffers.data()); }};
 
-    vk_call(vkBeginCommandBuffer(command_buffers[0], &info),
+    vk_args(vkBeginCommandBuffer(command_buffers[0], &info),
             (VkCommandBufferBeginInfo{
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             }));
-    vk_callv(vkCmdCopyBuffer(command_buffers[0], copy_info.src, copy_info.dst, 1, &info),
-             (VkBufferCopy{
-                 .size = copy_info.size,
-             }));
+    vk_args_noret(vkCmdCopyBuffer(command_buffers[0], copy_info.src, copy_info.dst, 1, &info),
+                  (VkBufferCopy{
+                      .size = copy_info.size,
+                  }));
     vkEndCommandBuffer(command_buffers[0]);
-    vk_call(vkQueueSubmit(copy_info.queue, 1, &info, VK_NULL_HANDLE),
+    vk_args(vkQueueSubmit(copy_info.queue, 1, &info, VK_NULL_HANDLE),
             (VkSubmitInfo{
                 .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 .commandBufferCount = uint32_t(command_buffers.size()),
@@ -580,65 +561,65 @@ auto copy_buffer(VkDevice device, CopyBufferInfo copy_info) -> bool {
 }
 
 auto create_semaphores(VkDevice device, uint32_t count) -> std::optional<std::vector<vk::AutoVkSemaphore>> {
-    const auto semaphore_create_info = VkSemaphoreCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-    };
     auto ret = std::vector<vk::AutoVkSemaphore>(count);
     for(auto& r : ret) {
-        ensure(vkCreateSemaphore(device, &semaphore_create_info, nullptr, std::inout_ptr(r)) == VK_SUCCESS);
+        vk_args(vkCreateSemaphore(device, &info, nullptr, std::inout_ptr(r)),
+                (VkSemaphoreCreateInfo{
+                    .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                }));
     }
     return ret;
 }
 
 auto create_fences(VkDevice device, uint32_t count, bool signaled) -> std::optional<std::vector<vk::AutoVkFence>> {
-    const auto fence_create_info = VkFenceCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : VkFenceCreateFlagBits(0),
-    };
     auto ret = std::vector<vk::AutoVkFence>(count);
     for(auto& r : ret) {
-        ensure(vkCreateFence(device, &fence_create_info, nullptr, std::inout_ptr(r)) == VK_SUCCESS);
+        vk_args(vkCreateFence(device, &info, nullptr, std::inout_ptr(r)),
+                (VkFenceCreateInfo{
+                    .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                    .flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : VkFenceCreateFlagBits(0),
+                }));
     }
     return ret;
 }
 
 auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkBuffer vertex_buffer, VkFramebuffer framebuffer, VkExtent2D extent, VkCommandBuffer command_buffer, uint32_t index) -> bool {
-    const auto command_buffer_info = VkCommandBufferBeginInfo{
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = 0,
-    };
-    ensure(vkBeginCommandBuffer(command_buffer, &command_buffer_info) == VK_SUCCESS);
-    const auto clear_color      = VkClearValue{.color = {.float32 = {0, 0, 0, 1}}};
-    const auto render_pass_info = VkRenderPassBeginInfo{
-        .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass  = render_pass,
-        .framebuffer = framebuffer,
-        .renderArea  = {
-             .offset = {0, 0},
-             .extent = extent,
-        },
-        .clearValueCount = 1,
-        .pClearValues    = &clear_color,
-    };
-    vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+    vk_args(vkBeginCommandBuffer(command_buffer, &info),
+            (VkCommandBufferBeginInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = 0,
+            }));
+    const auto clear_color = VkClearValue{.color = {.float32 = {0, 0, 0, 1}}};
+    vk_args_noret(vkCmdBeginRenderPass(command_buffer, &info, VK_SUBPASS_CONTENTS_INLINE),
+                  (VkRenderPassBeginInfo{
+                      .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                      .renderPass  = render_pass,
+                      .framebuffer = framebuffer,
+                      .renderArea  = {
+                           .offset = {0, 0},
+                           .extent = extent,
+                      },
+                      .clearValueCount = 1,
+                      .pClearValues    = &clear_color,
+                  }));
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const auto vertex_buffers = std::array{vertex_buffer};
     const auto offsets        = std::array{VkDeviceSize(0)};
     vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
-    const auto viewport = VkViewport{
-        .x        = 0,
-        .y        = 0,
-        .width    = float(extent.width),
-        .height   = float(extent.height),
-        .minDepth = 0,
-        .maxDepth = 1,
-    };
-    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-    const auto scissor = VkRect2D{
-        .offset = {0, 0},
-        .extent = extent,
-    };
-    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vk_args_noret(vkCmdSetViewport(command_buffer, 0, 1, &info),
+                  (VkViewport{
+                      .x        = 0,
+                      .y        = 0,
+                      .width    = float(extent.width),
+                      .height   = float(extent.height),
+                      .minDepth = 0,
+                      .maxDepth = 1,
+                  }));
+    vk_args_noret(vkCmdSetScissor(command_buffer, 0, 1, &info),
+                  (VkRect2D{
+                      .offset = {0, 0},
+                      .extent = extent,
+                  }));
     vkCmdDraw(command_buffer, vertices.size(), 1, 0, 0);
     vkCmdEndRenderPass(command_buffer);
     ensure(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
@@ -852,17 +833,17 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
         const auto signal_semaphores = std::array{context.render_finished_semaphores[current_frame].get()};
-        const auto submit_info       = VkSubmitInfo{
-                  .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                  .waitSemaphoreCount   = 1,
-                  .pWaitSemaphores      = wait_semaphores.data(),
-                  .pWaitDstStageMask    = wait_stages.data(),
-                  .commandBufferCount   = 1,
-                  .pCommandBuffers      = &context.command_buffers[current_frame],
-                  .signalSemaphoreCount = 1,
-                  .pSignalSemaphores    = signal_semaphores.data(),
-        };
-        ensure(vkQueueSubmit(graphics_queue, 1, &submit_info, context.in_flight_fences[current_frame].get()) == VK_SUCCESS);
+        vk_args(vkQueueSubmit(graphics_queue, 1, &info, context.in_flight_fences[current_frame].get()),
+                (VkSubmitInfo{
+                    .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .waitSemaphoreCount   = 1,
+                    .pWaitSemaphores      = wait_semaphores.data(),
+                    .pWaitDstStageMask    = wait_stages.data(),
+                    .commandBufferCount   = 1,
+                    .pCommandBuffers      = &context.command_buffers[current_frame],
+                    .signalSemaphoreCount = 1,
+                    .pSignalSemaphores    = signal_semaphores.data(),
+                }));
 
         // present rendered image
         const auto swapchains   = std::array{context.swapchain.get()};

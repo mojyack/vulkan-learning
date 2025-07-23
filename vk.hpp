@@ -36,6 +36,18 @@ declare_autoptr(VkFence, VkFence_T, vkDestroyFence(default_device, ptr, nullptr)
 declare_autoptr(VkBuffer, VkBuffer_T, vkDestroyBuffer(default_device, ptr, nullptr));
 declare_autoptr(VkDeviceMemory, VkDeviceMemory_T, vkFreeMemory(default_device, ptr, nullptr));
 
+#define vk_args(func, s)            \
+    {                               \
+        const auto info = s;        \
+        ensure(func == VK_SUCCESS); \
+    }
+
+#define vk_args_noret(func, s)    \
+    {                        \
+        const auto info = s; \
+        func;                \
+    }
+
 struct MemoryMapping {
     VkDevice       device;
     VkDeviceMemory memory;
@@ -60,7 +72,7 @@ auto query_array(auto func) -> std::optional<std::vector<T>> {
 }
 
 auto has_ext(std::span<const VkExtensionProperties> exts, std::string_view req) -> bool;
-auto create_shader_module(VkDevice device, const char* spv_file) -> VkShaderModule;
+auto create_shader_module(VkDevice device, const char* spv_file) -> VkShaderModule_T*;
 
 struct SwapchainDetail {
     VkSurfaceCapabilitiesKHR        caps;

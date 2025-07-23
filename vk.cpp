@@ -42,16 +42,15 @@ auto SwapchainDetail::query(const VkPhysicalDevice device, const VkSurfaceKHR su
     return ret;
 }
 
-auto create_shader_module(const VkDevice device, const char* const spv_file) -> VkShaderModule {
-    constexpr auto error_value = nullptr;
-    unwrap_v(code, read_file(spv_file));
-    const auto create_info = VkShaderModuleCreateInfo{
-        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = code.size(),
-        .pCode    = std::bit_cast<uint32_t*>(code.data()),
-    };
+auto create_shader_module(const VkDevice device, const char* const spv_file) -> VkShaderModule_T* {
+    unwrap(code, read_file(spv_file));
     auto shader_module = VkShaderModule();
-    ensure_v(vkCreateShaderModule(device, &create_info, nullptr, &shader_module) == VK_SUCCESS);
+    vk_args(vkCreateShaderModule(device, &info, nullptr, &shader_module),
+            (VkShaderModuleCreateInfo{
+                .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                .codeSize = code.size(),
+                .pCode    = std::bit_cast<uint32_t*>(code.data()),
+            }));
     return shader_module;
 }
 } // namespace vk
