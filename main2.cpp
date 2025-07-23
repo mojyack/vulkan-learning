@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 
 #include "macros/unwrap.hpp"
+#include "util/cleaner.hpp"
 #include "vk.hpp"
 
 namespace {
@@ -463,12 +464,23 @@ auto find_memory_type(VkPhysicalDevice phy, uint32_t type_filter, VkMemoryProper
     bail("failed to find suitable memory type");
 }
 
-auto create_buffer(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props) -> std::optional<std::pair<vk::AutoVkBuffer, vk::AutoVkDeviceMemory>> {
+struct CreateBufferInfo {
+    VkDeviceSize          size;
+    VkBufferUsageFlags    usage;
+    VkMemoryPropertyFlags props;
+};
+
+struct CreateBufferResult {
+    vk::AutoVkBuffer       buffer;
+    vk::AutoVkDeviceMemory memory;
+};
+
+auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo info) -> std::optional<CreateBufferResult> {
     // create buffer
     const auto buffer_create_info = VkBufferCreateInfo{
         .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size        = size,
-        .usage       = usage,
+        .size        = info.size,
+        .usage       = info.usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     auto buffer = vk::AutoVkBuffer();
@@ -478,7 +490,7 @@ auto create_buffer(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, VkB
     auto requirements = VkMemoryRequirements();
     vkGetBufferMemoryRequirements(device, buffer.get(), &requirements);
 
-    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, props));
+    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, info.props));
     auto alloc_info = VkMemoryAllocateInfo{
         .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize  = requirements.size,
@@ -490,7 +502,7 @@ auto create_buffer(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, VkB
     // bind them
     ensure(vkBindBufferMemory(device, buffer.get(), memory.get(), 0) == VK_SUCCESS);
 
-    return std::make_pair(std::move(buffer), std::move(memory));
+    return CreateBufferResult{std::move(buffer), std::move(memory)};
 }
 
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
@@ -505,6 +517,7 @@ auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCo
 }
 
 auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint32_t count) -> std::optional<std::vector<VkCommandBuffer>> {
+    // TODO: should call vkFreeCommandBuffers
     const auto command_buffer_alloc_info = VkCommandBufferAllocateInfo{
         .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool        = command_pool,
@@ -514,6 +527,56 @@ auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint3
     auto command_buffers = std::vector<VkCommandBuffer>(count);
     ensure(vkAllocateCommandBuffers(device, &command_buffer_alloc_info, command_buffers.data()) == VK_SUCCESS);
     return command_buffers;
+}
+
+struct S {
+    int a, b;
+};
+
+auto f(const S* p) -> int;
+
+#define vk_call(func, s)            \
+    {                               \
+        const auto info = s;        \
+        ensure(func == VK_SUCCESS); \
+    }
+
+#define vk_callv(func, s)    \
+    {                        \
+        const auto info = s; \
+        func;                \
+    }
+
+struct CopyBufferInfo {
+    VkCommandPool command_pool;
+    VkQueue       queue;
+    VkBuffer      src;
+    VkBuffer      dst;
+    VkDeviceSize  size;
+};
+
+auto copy_buffer(VkDevice device, CopyBufferInfo copy_info) -> bool {
+    unwrap(command_buffers, allocate_command_buffers(device, copy_info.command_pool, 1));
+    const auto command_buffers_cleaner = Cleaner{[&] { vkFreeCommandBuffers(device, copy_info.command_pool, command_buffers.size(), command_buffers.data()); }};
+
+    vk_call(vkBeginCommandBuffer(command_buffers[0], &info),
+            (VkCommandBufferBeginInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            }));
+    vk_callv(vkCmdCopyBuffer(command_buffers[0], copy_info.src, copy_info.dst, 1, &info),
+             (VkBufferCopy{
+                 .size = copy_info.size,
+             }));
+    vkEndCommandBuffer(command_buffers[0]);
+    vk_call(vkQueueSubmit(copy_info.queue, 1, &info, VK_NULL_HANDLE),
+            (VkSubmitInfo{
+                .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = uint32_t(command_buffers.size()),
+                .pCommandBuffers    = command_buffers.data(),
+            }));
+    ensure(vkQueueWaitIdle(copy_info.queue) == VK_SUCCESS);
+    return true;
 }
 
 auto create_semaphores(VkDevice device, uint32_t count) -> std::optional<std::vector<vk::AutoVkSemaphore>> {
@@ -598,8 +661,6 @@ struct Context {
     vk::AutoVkRenderPass               render_pass;
     vk::AutoVkPipeline                 pipeline;
     std::vector<vk::AutoVkFramebuffer> framebuffers;
-    vk::AutoVkBuffer                   vertex_buffer;
-    vk::AutoVkDeviceMemory             vertex_memory;
     vk::AutoVkCommandPool              command_pool;
     std::vector<VkCommandBuffer>       command_buffers;
     std::vector<vk::AutoVkSemaphore>   image_avail_semaphores;
@@ -708,16 +769,6 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.framebuffers = std::move(framebuffers);
     }
     {
-        unwrap_mut(vertex_buffer, create_buffer(context.phy, context.device.get(), sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
-        context.vertex_buffer = std::move(vertex_buffer.first);
-        context.vertex_memory = std::move(vertex_buffer.second);
-    }
-    {
-        const auto size = sizeof(Vertex) * vertices.size();
-        unwrap_mut(mapping, vk::MemoryMapping::map(context.device.get(), context.vertex_memory.get(), size));
-        std::memcpy(mapping.ptr, vertices.data(), size);
-    }
-    {
         unwrap_mut(command_pool, create_command_pool(context.device.get(), context.graphics_queue_index));
         context.command_pool.reset(&command_pool);
     }
@@ -739,6 +790,39 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     auto present_queue  = VkQueue();
     vkGetDeviceQueue(context.device.get(), context.graphics_queue_index, 0, &graphics_queue);
     vkGetDeviceQueue(context.device.get(), context.present_queue_index, 0, &present_queue);
+
+    // upload vertex data
+    // create staging buffer
+    constexpr auto vertex_buffer_size = VkDeviceSize(sizeof(Vertex) * vertices.size());
+    unwrap_mut(staging_buffer, create_buffer(context.phy, context.device.get(),
+                                             {
+                                                 .size  = vertex_buffer_size,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                             }));
+    // create vertex buffer
+    unwrap_mut(vertex_buffer, create_buffer(context.phy, context.device.get(),
+                                            {
+                                                .size  = vertex_buffer_size,
+                                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                                .props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                            }));
+    // upload to staging buffer
+    {
+        const auto size = sizeof(Vertex) * vertices.size();
+        unwrap_mut(mapping, vk::MemoryMapping::map(context.device.get(), staging_buffer.memory.get(), size));
+        std::memcpy(mapping.ptr, vertices.data(), size);
+    }
+    // copy staging to vertex buffer
+    ensure(copy_buffer(context.device.get(),
+                       {.command_pool = context.command_pool.get(),
+                        .queue        = graphics_queue,
+                        .src          = staging_buffer.buffer.get(),
+                        .dst          = vertex_buffer.buffer.get(),
+                        .size         = vertex_buffer_size}));
+    // staging buffer can be released
+    staging_buffer = {};
+
     auto current_frame = uint32_t(0);
 
     while(!glfwWindowShouldClose(&window)) {
@@ -763,7 +847,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
         // fill command buffer
         ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
-        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), context.vertex_buffer.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
+        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), vertex_buffer.buffer.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
