@@ -1,5 +1,5 @@
-#include <ranges>
 #include <cstring>
+#include <ranges>
 #include <vector>
 
 #define GLFW_INCLUDE_VULKAN
@@ -448,18 +448,6 @@ auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> i
     return framebuffers;
 }
 
-auto create_vertex_buffer(VkDevice device) -> VkBuffer_T* {
-    const auto buffer_create_info = VkBufferCreateInfo{
-        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size        = sizeof(Vertex) * vertices.size(),
-        .usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    auto buffer = VkBuffer();
-    ensure(vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer) == VK_SUCCESS);
-    return buffer;
-}
-
 auto find_memory_type(VkPhysicalDevice phy, uint32_t type_filter, VkMemoryPropertyFlags properties) -> std::optional<uint32_t> {
     auto memory_properties = VkPhysicalDeviceMemoryProperties();
     vkGetPhysicalDeviceMemoryProperties(phy, &memory_properties);
@@ -475,19 +463,34 @@ auto find_memory_type(VkPhysicalDevice phy, uint32_t type_filter, VkMemoryProper
     bail("failed to find suitable memory type");
 }
 
-auto allocate_device_memory_for_buffer(VkPhysicalDevice phy, VkDevice device, VkBuffer buffer) -> VkDeviceMemory_T* {
-    auto requirements = VkMemoryRequirements();
-    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+auto create_buffer(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props) -> std::optional<std::pair<vk::AutoVkBuffer, vk::AutoVkDeviceMemory>> {
+    // create buffer
+    const auto buffer_create_info = VkBufferCreateInfo{
+        .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size        = size,
+        .usage       = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    auto buffer = vk::AutoVkBuffer();
+    ensure(vkCreateBuffer(device, &buffer_create_info, nullptr, std::inout_ptr(buffer)) == VK_SUCCESS);
 
-    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+    // allocate memory
+    auto requirements = VkMemoryRequirements();
+    vkGetBufferMemoryRequirements(device, buffer.get(), &requirements);
+
+    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, props));
     auto alloc_info = VkMemoryAllocateInfo{
         .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize  = requirements.size,
         .memoryTypeIndex = memory_type,
     };
-    auto memory = VkDeviceMemory();
-    ensure(vkAllocateMemory(device, &alloc_info, nullptr, &memory) == VK_SUCCESS);
-    return memory;
+    auto memory = vk::AutoVkDeviceMemory();
+    ensure(vkAllocateMemory(device, &alloc_info, nullptr, std::inout_ptr(memory)) == VK_SUCCESS);
+
+    // bind them
+    ensure(vkBindBufferMemory(device, buffer.get(), memory.get(), 0) == VK_SUCCESS);
+
+    return std::make_pair(std::move(buffer), std::move(memory));
 }
 
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
@@ -557,7 +560,7 @@ auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkBuff
     vkCmdBeginRenderPass(command_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const auto vertex_buffers = std::array{vertex_buffer};
-    const auto offsets = std::array {VkDeviceSize(0)};
+    const auto offsets        = std::array{VkDeviceSize(0)};
     vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
     const auto viewport = VkViewport{
         .x        = 0,
@@ -705,14 +708,10 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.framebuffers = std::move(framebuffers);
     }
     {
-        unwrap_mut(vertex_buffer, create_vertex_buffer(context.device.get()));
-        context.vertex_buffer.reset(&vertex_buffer);
+        unwrap_mut(vertex_buffer, create_buffer(context.phy, context.device.get(), sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+        context.vertex_buffer = std::move(vertex_buffer.first);
+        context.vertex_memory = std::move(vertex_buffer.second);
     }
-    {
-        unwrap_mut(vertex_memory, allocate_device_memory_for_buffer(context.phy, context.device.get(), context.vertex_buffer.get()));
-        context.vertex_memory.reset(&vertex_memory);
-    }
-    ensure(vkBindBufferMemory(context.device.get(), context.vertex_buffer.get(), context.vertex_memory.get(), 0) == VK_SUCCESS);
     {
         const auto size = sizeof(Vertex) * vertices.size();
         unwrap_mut(mapping, vk::MemoryMapping::map(context.device.get(), context.vertex_memory.get(), size));
