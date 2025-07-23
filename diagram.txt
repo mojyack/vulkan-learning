@@ -15,10 +15,7 @@ flowchart TD
     VkAttachmentReference -.-> VkSubpassDescription
     VkSubpassDependency & VkSubpassDescription -.-> render_pass_info
     render_pass_info -->|device.vkCreateRenderPass| VkRenderPass
-    verties -.->|binding index| VkVertexBindingDescription
-    VkVertexBindingDescription -.->|layout number| VkVertexInputAttributeDescription@{ shape: processes }
-    VkVertexBindingDescription & VkVertexInputAttributeDescription -.-> vertex_input_state_info
-    VkShaderModule & VkPipelineLayout & VkRenderPass & vertex_input_state_info -.-> pipeline_info
+    VkShaderModule & VkPipelineLayout & VkRenderPass -.-> pipeline_info
     pipeline_info -->|device.vkCreateGraphicsPipeline| VkPipeline
     VkImageView & VkRenderPass -.-> framebuffer_info
     VkSwapChain -.->|.extent| framebuffer_info
