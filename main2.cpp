@@ -38,10 +38,13 @@ const auto vertex_attr_desc = std::array{
 };
 
 const auto vertices = std::array{
-    Vertex{{0.0, -0.5}, {1, 0, 0}},
-    Vertex{{0.5, 0.5}, {0, 1, 0}},
-    Vertex{{-0.5, 0.5}, {0, 0, 1}},
+    Vertex{{-0.5, -0.5}, {1, 0, 0}},
+    Vertex{{0.5, -0.5}, {0, 1, 0}},
+    Vertex{{0.5, 0.5}, {0, 0, 1}},
+    Vertex{{-0.5, 0.5}, {1, 1, 1}},
 };
+
+const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
 
 constexpr auto invalid_queue_index = (uint32_t)-1;
 
@@ -583,46 +586,58 @@ auto create_fences(VkDevice device, uint32_t count, bool signaled) -> std::optio
     return ret;
 }
 
-auto record_command_buffer(VkPipeline pipeline, VkRenderPass render_pass, VkBuffer vertex_buffer, VkFramebuffer framebuffer, VkExtent2D extent, VkCommandBuffer command_buffer, uint32_t index) -> bool {
-    vk_args(vkBeginCommandBuffer(command_buffer, &info),
+struct RecordCommandBufferInfo {
+    VkPipeline      pipeline;
+    VkRenderPass    render_pass;
+    VkBuffer        vertex_buffer;
+    VkBuffer        index_buffer;
+    VkFramebuffer   framebuffer;
+    VkExtent2D      extent;
+    VkCommandBuffer command_buffer;
+    uint32_t        index;
+};
+
+auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
+    vk_args(vkBeginCommandBuffer(rec_info.command_buffer, &info),
             (VkCommandBufferBeginInfo{
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 .flags = 0,
             }));
     const auto clear_color = VkClearValue{.color = {.float32 = {0, 0, 0, 1}}};
-    vk_args_noret(vkCmdBeginRenderPass(command_buffer, &info, VK_SUBPASS_CONTENTS_INLINE),
+    vk_args_noret(vkCmdBeginRenderPass(rec_info.command_buffer, &info, VK_SUBPASS_CONTENTS_INLINE),
                   (VkRenderPassBeginInfo{
                       .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                      .renderPass  = render_pass,
-                      .framebuffer = framebuffer,
+                      .renderPass  = rec_info.render_pass,
+                      .framebuffer = rec_info.framebuffer,
                       .renderArea  = {
                            .offset = {0, 0},
-                           .extent = extent,
+                           .extent = rec_info.extent,
                       },
                       .clearValueCount = 1,
                       .pClearValues    = &clear_color,
                   }));
-    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    const auto vertex_buffers = std::array{vertex_buffer};
+    vkCmdBindPipeline(rec_info.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rec_info.pipeline);
+    const auto vertex_buffers = std::array{rec_info.vertex_buffer};
     const auto offsets        = std::array{VkDeviceSize(0)};
-    vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
-    vk_args_noret(vkCmdSetViewport(command_buffer, 0, 1, &info),
+    vkCmdBindVertexBuffers(rec_info.command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
+    vkCmdBindIndexBuffer(rec_info.command_buffer, rec_info.index_buffer, 0, VK_INDEX_TYPE_UINT16);
+    vk_args_noret(vkCmdSetViewport(rec_info.command_buffer, 0, 1, &info),
                   (VkViewport{
                       .x        = 0,
                       .y        = 0,
-                      .width    = float(extent.width),
-                      .height   = float(extent.height),
+                      .width    = float(rec_info.extent.width),
+                      .height   = float(rec_info.extent.height),
                       .minDepth = 0,
                       .maxDepth = 1,
                   }));
-    vk_args_noret(vkCmdSetScissor(command_buffer, 0, 1, &info),
+    vk_args_noret(vkCmdSetScissor(rec_info.command_buffer, 0, 1, &info),
                   (VkRect2D{
                       .offset = {0, 0},
-                      .extent = extent,
+                      .extent = rec_info.extent,
                   }));
-    vkCmdDraw(command_buffer, vertices.size(), 1, 0, 0);
-    vkCmdEndRenderPass(command_buffer);
-    ensure(vkEndCommandBuffer(command_buffer) == VK_SUCCESS);
+    vkCmdDrawIndexed(rec_info.command_buffer, indices.size(), 1, 0, 0, 0);
+    vkCmdEndRenderPass(rec_info.command_buffer);
+    ensure(vkEndCommandBuffer(rec_info.command_buffer) == VK_SUCCESS);
     return true;
 };
 
@@ -686,6 +701,46 @@ auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
     context.framebuffers = std::move(framebuffers);
     return true;
 }
+
+struct TransferMemoryInfo {
+    VkPhysicalDevice   phy;
+    VkDevice           device;
+    VkCommandPool      command_pool;
+    VkQueue            queue;
+    VkBufferUsageFlags usage;
+    const void*        ptr;
+    size_t             size;
+};
+
+auto transfer_memory(TransferMemoryInfo x_info) -> std::optional<CreateBufferResult> {
+    // create staging buffer
+    unwrap_mut(staging_buffer, create_buffer(x_info.phy, x_info.device,
+                                             {
+                                                 .size  = x_info.size,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                             }));
+    // create device local buffer
+    unwrap_mut(local_buffer, create_buffer(x_info.phy, x_info.device,
+                                           {
+                                               .size  = x_info.size,
+                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | x_info.usage,
+                                               .props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                           }));
+    // upload to staging buffer
+    {
+        unwrap_mut(mapping, vk::MemoryMapping::map(x_info.device, staging_buffer.memory.get(), x_info.size));
+        std::memcpy(mapping.ptr, x_info.ptr, x_info.size);
+    }
+    // copy staging to local buffer
+    ensure(copy_buffer(x_info.device,
+                       {.command_pool = x_info.command_pool,
+                        .queue        = x_info.queue,
+                        .src          = staging_buffer.buffer.get(),
+                        .dst          = local_buffer.buffer.get(),
+                        .size         = x_info.size}));
+    return std::move(local_buffer);
+};
 
 auto vulkan_main(GLFWwindow& window) -> bool {
     auto context = Context();
@@ -772,37 +827,26 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     vkGetDeviceQueue(context.device.get(), context.graphics_queue_index, 0, &graphics_queue);
     vkGetDeviceQueue(context.device.get(), context.present_queue_index, 0, &present_queue);
 
-    // upload vertex data
-    // create staging buffer
-    constexpr auto vertex_buffer_size = VkDeviceSize(sizeof(Vertex) * vertices.size());
-    unwrap_mut(staging_buffer, create_buffer(context.phy, context.device.get(),
-                                             {
-                                                 .size  = vertex_buffer_size,
-                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                             }));
-    // create vertex buffer
-    unwrap_mut(vertex_buffer, create_buffer(context.phy, context.device.get(),
-                                            {
-                                                .size  = vertex_buffer_size,
-                                                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                                                .props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                            }));
-    // upload to staging buffer
-    {
-        const auto size = sizeof(Vertex) * vertices.size();
-        unwrap_mut(mapping, vk::MemoryMapping::map(context.device.get(), staging_buffer.memory.get(), size));
-        std::memcpy(mapping.ptr, vertices.data(), size);
-    }
-    // copy staging to vertex buffer
-    ensure(copy_buffer(context.device.get(),
-                       {.command_pool = context.command_pool.get(),
-                        .queue        = graphics_queue,
-                        .src          = staging_buffer.buffer.get(),
-                        .dst          = vertex_buffer.buffer.get(),
-                        .size         = vertex_buffer_size}));
-    // staging buffer can be released
-    staging_buffer = {};
+    // upload vertex buffer
+    unwrap(vertex_buffer, transfer_memory({
+                              .phy          = context.phy,
+                              .device       = context.device.get(),
+                              .command_pool = context.command_pool.get(),
+                              .queue        = graphics_queue,
+                              .usage        = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                              .ptr          = vertices.data(),
+                              .size         = sizeof(vertices[0]) * vertices.size(),
+                          }));
+    // upload index buffer
+    unwrap(index_buffer, transfer_memory({
+                             .phy          = context.phy,
+                             .device       = context.device.get(),
+                             .command_pool = context.command_pool.get(),
+                             .queue        = graphics_queue,
+                             .usage        = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                             .ptr          = indices.data(),
+                             .size         = sizeof(indices[0]) * indices.size(),
+                         }));
 
     auto current_frame = uint32_t(0);
 
@@ -828,7 +872,16 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
         // fill command buffer
         ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
-        ensure(record_command_buffer(context.pipeline.get(), context.render_pass.get(), vertex_buffer.buffer.get(), context.framebuffers[image_index].get(), context.swapchain_params.extent, context.command_buffers[current_frame], image_index));
+        ensure(record_command_buffer({
+            .pipeline       = context.pipeline.get(),
+            .render_pass    = context.render_pass.get(),
+            .vertex_buffer  = vertex_buffer.buffer.get(),
+            .index_buffer   = index_buffer.buffer.get(),
+            .framebuffer    = context.framebuffers[image_index].get(),
+            .extent         = context.swapchain_params.extent,
+            .command_buffer = context.command_buffers[current_frame],
+            .index          = image_index,
+        }));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
         const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
