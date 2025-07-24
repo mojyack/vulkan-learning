@@ -35,6 +35,8 @@ declare_autoptr(VkSemaphore, VkSemaphore_T, vkDestroySemaphore(default_device, p
 declare_autoptr(VkFence, VkFence_T, vkDestroyFence(default_device, ptr, nullptr));
 declare_autoptr(VkBuffer, VkBuffer_T, vkDestroyBuffer(default_device, ptr, nullptr));
 declare_autoptr(VkDeviceMemory, VkDeviceMemory_T, vkFreeMemory(default_device, ptr, nullptr));
+declare_autoptr(VkDescriptorSetLayout, VkDescriptorSetLayout_T, vkDestroyDescriptorSetLayout(default_device, ptr, nullptr));
+declare_autoptr(VkDescriptorPool, VkDescriptorPool_T, vkDestroyDescriptorPool(default_device, ptr, nullptr));
 
 #define vk_args(func, s)            \
     {                               \
@@ -42,10 +44,10 @@ declare_autoptr(VkDeviceMemory, VkDeviceMemory_T, vkFreeMemory(default_device, p
         ensure(func == VK_SUCCESS); \
     }
 
-#define vk_args_noret(func, s)    \
-    {                        \
-        const auto info = s; \
-        func;                \
+#define vk_args_noret(func, s) \
+    {                          \
+        const auto info = s;   \
+        func;                  \
     }
 
 struct MemoryMapping {
@@ -54,6 +56,8 @@ struct MemoryMapping {
     void*          ptr = nullptr;
 
     static auto map(VkDevice device, VkDeviceMemory memory, size_t size) -> std::optional<MemoryMapping>;
+
+    auto operator=(MemoryMapping&& other) -> MemoryMapping&;
 
     MemoryMapping() = default;
     MemoryMapping(MemoryMapping&& other);

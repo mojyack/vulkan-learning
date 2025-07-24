@@ -11,10 +11,15 @@ auto MemoryMapping::map(VkDevice device, VkDeviceMemory memory, size_t size) -> 
     return ret;
 }
 
-MemoryMapping::MemoryMapping(MemoryMapping&& other) {
+auto MemoryMapping::operator=(MemoryMapping&& other) -> MemoryMapping& {
     std::swap(device, other.device);
     std::swap(memory, other.memory);
     std::swap(ptr, other.ptr);
+    return *this;
+}
+
+MemoryMapping::MemoryMapping(MemoryMapping&& other) {
+    *this = std::move(other);
 }
 
 MemoryMapping::~MemoryMapping() {

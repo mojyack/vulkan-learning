@@ -4,7 +4,10 @@
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "macros/unwrap.hpp"
 #include "util/cleaner.hpp"
@@ -45,6 +48,12 @@ const auto vertices = std::array{
 };
 
 const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
+
+struct UniformBufferObject {
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 proj;
+};
 
 constexpr auto invalid_queue_index = (uint32_t)-1;
 
@@ -271,11 +280,59 @@ auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkForma
     return image_views;
 }
 
-auto create_pipeline_layout(VkDevice device) -> VkPipelineLayout_T* {
+auto create_desc_set_layout(VkDevice device) -> VkDescriptorSetLayout_T* {
+    const auto binding = VkDescriptorSetLayoutBinding{
+        .binding         = 0,
+        .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags      = VK_SHADER_STAGE_VERTEX_BIT,
+    };
+    auto ret = VkDescriptorSetLayout();
+    vk_args(vkCreateDescriptorSetLayout(device, &info, nullptr, &ret),
+            (VkDescriptorSetLayoutCreateInfo{
+                .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = 1,
+                .pBindings    = &binding,
+            }));
+    return ret;
+}
+
+auto create_descriptror_pool(VkDevice device, uint32_t count) -> VkDescriptorPool_T* {
+    const auto pool_size = VkDescriptorPoolSize{
+        .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = count,
+    };
+    auto ret = VkDescriptorPool();
+    vk_args(vkCreateDescriptorPool(device, &info, nullptr, &ret),
+            (VkDescriptorPoolCreateInfo{
+                .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                .maxSets       = count,
+                .poolSizeCount = 1,
+                .pPoolSizes    = &pool_size,
+            }));
+    return ret;
+};
+
+auto allocate_descriptor_sets(VkDevice device, VkDescriptorPool desc_pool, VkDescriptorSetLayout desc_set_layout, uint32_t count) -> std::optional<std::vector<VkDescriptorSet>> {
+    const auto layouts = std::vector(count, desc_set_layout);
+    auto       ret     = std::vector<VkDescriptorSet>(count);
+    vk_args(vkAllocateDescriptorSets(device, &info, ret.data()),
+            (VkDescriptorSetAllocateInfo{
+                .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool     = desc_pool,
+                .descriptorSetCount = count,
+                .pSetLayouts        = layouts.data(),
+            }));
+    return ret;
+}
+
+auto create_pipeline_layout(VkDevice device, VkDescriptorSetLayout desc_set_layout) -> VkPipelineLayout_T* {
     auto pipeline_layout = VkPipelineLayout();
     vk_args(vkCreatePipelineLayout(device, &info, nullptr, &pipeline_layout),
             (VkPipelineLayoutCreateInfo{
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 1,
+                .pSetLayouts    = &desc_set_layout,
             }));
     return pipeline_layout;
 }
@@ -367,7 +424,7 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
         .rasterizerDiscardEnable = VK_FALSE,
         .polygonMode             = VK_POLYGON_MODE_FILL,
         .cullMode                = VK_CULL_MODE_BACK_BIT,
-        .frontFace               = VK_FRONT_FACE_CLOCKWISE,
+        .frontFace               = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .depthBiasEnable         = VK_FALSE,
         .lineWidth               = 1.0,
     };
@@ -507,6 +564,27 @@ auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo creat
     return CreateBufferResult{std::move(buffer), std::move(memory)};
 }
 
+struct UniformBuffer {
+    vk::AutoVkBuffer       buffer;
+    vk::AutoVkDeviceMemory memory;
+    vk::MemoryMapping      mapping;
+};
+
+auto create_uniform_buffers(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, size_t count) -> std::optional<std::vector<UniformBuffer>> {
+    auto ret = std::vector<UniformBuffer>(count);
+    for(auto& ubuf : ret) {
+        unwrap_mut(buf, create_buffer(phy, device,
+                                      {
+                                          .size  = size,
+                                          .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                          .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                      }));
+        unwrap_mut(map, vk::MemoryMapping::map(device, buf.memory.get(), size));
+        ubuf = UniformBuffer{std::move(buf.buffer), std::move(buf.memory), std::move(map)};
+    }
+    return ret;
+}
+
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
     auto command_pool = VkCommandPool();
     vk_args(vkCreateCommandPool(device, &info, nullptr, &command_pool),
@@ -587,14 +665,16 @@ auto create_fences(VkDevice device, uint32_t count, bool signaled) -> std::optio
 }
 
 struct RecordCommandBufferInfo {
-    VkPipeline      pipeline;
-    VkRenderPass    render_pass;
-    VkBuffer        vertex_buffer;
-    VkBuffer        index_buffer;
-    VkFramebuffer   framebuffer;
-    VkExtent2D      extent;
-    VkCommandBuffer command_buffer;
-    uint32_t        index;
+    VkPipeline       pipeline;
+    VkRenderPass     render_pass;
+    VkBuffer         vertex_buffer;
+    VkBuffer         index_buffer;
+    VkFramebuffer    framebuffer;
+    VkExtent2D       extent;
+    VkCommandBuffer  command_buffer;
+    VkPipelineLayout pipeline_layout;
+    VkDescriptorSet  desc_set;
+    uint32_t         index;
 };
 
 auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
@@ -635,6 +715,7 @@ auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
                       .offset = {0, 0},
                       .extent = rec_info.extent,
                   }));
+    vkCmdBindDescriptorSets(rec_info.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rec_info.pipeline_layout, 0, 1, &rec_info.desc_set, 0, nullptr);
     vkCmdDrawIndexed(rec_info.command_buffer, indices.size(), 1, 0, 0, 0);
     vkCmdEndRenderPass(rec_info.command_buffer);
     ensure(vkEndCommandBuffer(rec_info.command_buffer) == VK_SUCCESS);
@@ -653,12 +734,15 @@ struct Context {
     std::vector<vk::AutoVkImageView>   swapchain_images;
     vk::AutoVkShaderModule             vertex_shader;
     vk::AutoVkShaderModule             fragment_shader;
+    vk::AutoVkDescriptorSetLayout      desc_set_layout;
     vk::AutoVkPipelineLayout           pipeline_layout;
     vk::AutoVkRenderPass               render_pass;
     vk::AutoVkPipeline                 pipeline;
     std::vector<vk::AutoVkFramebuffer> framebuffers;
     vk::AutoVkCommandPool              command_pool;
     std::vector<VkCommandBuffer>       command_buffers;
+    vk::AutoVkDescriptorPool           desc_pool;
+    std::vector<VkDescriptorSet>       desc_sets;
     std::vector<vk::AutoVkSemaphore>   image_avail_semaphores;
     std::vector<vk::AutoVkSemaphore>   render_finished_semaphores;
     std::vector<vk::AutoVkFence>       in_flight_fences;
@@ -740,7 +824,7 @@ auto transfer_memory(TransferMemoryInfo x_info) -> std::optional<CreateBufferRes
                         .dst          = local_buffer.buffer.get(),
                         .size         = x_info.size}));
     return std::move(local_buffer);
-};
+}
 
 auto vulkan_main(GLFWwindow& window) -> bool {
     auto context = Context();
@@ -793,7 +877,11 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.render_pass.reset(&render_pass);
     }
     {
-        unwrap_mut(pipeline_layout, create_pipeline_layout(context.device.get()));
+        unwrap_mut(desc_set_layout, create_desc_set_layout(context.device.get()));
+        context.desc_set_layout.reset(&desc_set_layout);
+    }
+    {
+        unwrap_mut(pipeline_layout, create_pipeline_layout(context.device.get(), context.desc_set_layout.get()));
         context.pipeline_layout.reset(&pipeline_layout);
     }
     {
@@ -804,14 +892,22 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), context.swapchain_params.extent));
         context.framebuffers = std::move(framebuffers);
     }
+    constexpr auto max_frames_in_flight = 2;
     {
         unwrap_mut(command_pool, create_command_pool(context.device.get(), context.graphics_queue_index));
         context.command_pool.reset(&command_pool);
     }
-    constexpr auto max_frames_in_flight = 2;
     {
         unwrap_mut(command_buffers, allocate_command_buffers(context.device.get(), context.command_pool.get(), max_frames_in_flight));
         context.command_buffers = std::move(command_buffers);
+    }
+    {
+        unwrap_mut(desc_pool, create_descriptror_pool(context.device.get(), max_frames_in_flight));
+        context.desc_pool.reset(&desc_pool);
+    }
+    {
+        unwrap_mut(desc_sets, allocate_descriptor_sets(context.device.get(), context.desc_pool.get(), context.desc_set_layout.get(), max_frames_in_flight));
+        context.desc_sets = std::move(desc_sets);
     }
     {
         unwrap_mut(image_avail_semaphores, create_semaphores(context.device.get(), max_frames_in_flight));
@@ -847,8 +943,27 @@ auto vulkan_main(GLFWwindow& window) -> bool {
                              .ptr          = indices.data(),
                              .size         = sizeof(indices[0]) * indices.size(),
                          }));
+    // allocate uniform buffer
+    unwrap(uniform_buffers, create_uniform_buffers(context.phy, context.device.get(), sizeof(UniformBufferObject), max_frames_in_flight));
+    for(auto&& [set, ubuf] : std::ranges::zip_view(context.desc_sets, uniform_buffers)) {
+        const auto buffer_info = VkDescriptorBufferInfo{
+            .buffer = ubuf.buffer.get(),
+            .offset = 0,
+            .range  = sizeof(UniformBufferObject),
+        };
+        vk_args_noret(vkUpdateDescriptorSets(context.device.get(), 1, &info, 0, nullptr),
+                      (VkWriteDescriptorSet{
+                          .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                          .dstSet          = set,
+                          .dstBinding      = 0,
+                          .dstArrayElement = 0,
+                          .descriptorCount = 1,
+                          .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                          .pBufferInfo     = &buffer_info,
+                      }));
+    }
 
-    auto current_frame = uint32_t(0);
+    auto count = 0uz;
 
     while(!glfwWindowShouldClose(&window)) {
         glfwPollEvents();
@@ -856,7 +971,8 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         constexpr auto uint64_max = std::numeric_limits<uint64_t>::max();
 
         // wait for previous command completion
-        const auto fence = context.in_flight_fences[current_frame].get();
+        const auto current_frame = uint32_t(count % max_frames_in_flight);
+        const auto fence         = context.in_flight_fences[current_frame].get();
         ensure(vkWaitForFences(context.device.get(), 1, &fence, VK_TRUE, uint64_max) == VK_SUCCESS);
 
         // acquire image from swapchain
@@ -870,17 +986,30 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
         ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
 
+        // update transform
+        const auto time   = count / 60.0f;
+        const auto aspect = 1.0f * context.swapchain_params.extent.width / context.swapchain_params.extent.height;
+
+        auto ubo  = UniformBufferObject();
+        ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.view  = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
+        ubo.proj[1][1] *= -1;
+        std::memcpy(uniform_buffers[current_frame].mapping.ptr, &ubo, sizeof(ubo));
+
         // fill command buffer
         ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
         ensure(record_command_buffer({
-            .pipeline       = context.pipeline.get(),
-            .render_pass    = context.render_pass.get(),
-            .vertex_buffer  = vertex_buffer.buffer.get(),
-            .index_buffer   = index_buffer.buffer.get(),
-            .framebuffer    = context.framebuffers[image_index].get(),
-            .extent         = context.swapchain_params.extent,
-            .command_buffer = context.command_buffers[current_frame],
-            .index          = image_index,
+            .pipeline        = context.pipeline.get(),
+            .render_pass     = context.render_pass.get(),
+            .vertex_buffer   = vertex_buffer.buffer.get(),
+            .index_buffer    = index_buffer.buffer.get(),
+            .framebuffer     = context.framebuffers[image_index].get(),
+            .extent          = context.swapchain_params.extent,
+            .command_buffer  = context.command_buffers[current_frame],
+            .pipeline_layout = context.pipeline_layout.get(),
+            .desc_set        = context.desc_sets[current_frame],
+            .index           = image_index,
         }));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
@@ -915,7 +1044,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         } else {
             ensure(ret == VK_SUCCESS, "result={:x}", uint32_t(ret));
         }
-        current_frame = (current_frame + 1) % max_frames_in_flight;
+        count += 1;
     }
 
     ensure(vkDeviceWaitIdle(context.device.get()) == VK_SUCCESS);
