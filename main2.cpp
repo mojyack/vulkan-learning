@@ -674,7 +674,6 @@ struct RecordCommandBufferInfo {
     VkCommandBuffer  command_buffer;
     VkPipelineLayout pipeline_layout;
     VkDescriptorSet  desc_set;
-    uint32_t         index;
 };
 
 auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
@@ -1009,7 +1008,6 @@ auto vulkan_main(GLFWwindow& window) -> bool {
             .command_buffer  = context.command_buffers[current_frame],
             .pipeline_layout = context.pipeline_layout.get(),
             .desc_set        = context.desc_sets[current_frame],
-            .index           = image_index,
         }));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
