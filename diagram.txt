@@ -1,25 +1,83 @@
+---
+config:
+    layout: elk
+---
 flowchart TD
-    GLFWwindow --> VkSurface
-    VkInstance -->|glfwCreateWindowSurface| VkSurface
-    VkInstance -->|vkEnumeratePhysicalDevices| VkPhysicalDevice@{ shape: processes }
-    VkPhysicalDevice -->|vkCreateDevice| VkDevice
-    VkDevice -->|vkGetDeviceQueue| VkQueue@{ shape: processes, label: "VkQueue(graphics,present)" }
-    VkSurface & VkQueue -.-> swapchain_info
-    swapchain_info -->|device.vkCreateSwapchainKHR| VkSwapChain
-    VkSwapChain -->|vkGetSwapchainImagesKHR| VkImage@{ shape: processes }
-    VkImage -->|vkCreateImageView| VkImageView@{ shape: processes }
-    VkDevice -->|vkCreateShaderModule| VkShaderModule@{ shape: processes, label: "VkShaderModule(vertex,fragment)" }
-    VkDevice -->|vkCreatePipelineLayout| VkPipelineLayout
-    VkSwapChain -.->|.format| VkAttachmentDescriptionColor["VkAttachmentDescription(color)"]
-    VkAttachmentDescriptionColor -.-> VkAttachmentReference
-    VkAttachmentReference -.-> VkSubpassDescription
-    VkSubpassDependency & VkSubpassDescription -.-> render_pass_info
-    render_pass_info -->|device.vkCreateRenderPass| VkRenderPass
-    VkShaderModule & VkPipelineLayout & VkRenderPass -.-> pipeline_info
-    pipeline_info -->|device.vkCreateGraphicsPipeline| VkPipeline
-    VkImageView & VkRenderPass -.-> framebuffer_info
-    VkSwapChain -.->|.extent| framebuffer_info
-    framebuffer_info -.->|device.vkCreateFramebuffer| VkFramebuffer@{ shape: processes }
-    VkQueue -.->|"[graphics]"| command_pool_info
-    command_pool_info -->|device.vkCreateCommandPool| VkCommandPool
-    VkCommandPool -->|device.vkAllocateCommandBuffers| VkCommandBuffer
+    subgraph shapes
+        VkStruct
+        OtherVariables@{ shape: rounded }
+        Arguments@{ shape: stadium }
+        Function@{ shape: hex }
+    end
+    subgraph device
+        VkCreateInstance@{ shape: hex } --> VkInstance
+        GLFWwindow & VkInstance --> glfwCreateWindowSurface@{ shape: hex } --> VkSurface
+        VkInstance --> vkEnumeratePhysicalDevices@{ shape: hex } --> VkPhysicalDevice@{ shape: processes }
+        VkInstance --> vkGetPhysicalDeviceQueueFamilyProperties@{ shape: hex } --> graphics_queue_index@{ shape: rounded } & present_queue_index@{ shape: rounded }
+        VkPhysicalDevice & graphics_queue_index & present_queue_index --> vkCreateDevice@{ shape: hex } --> VkDevice
+    end
+    subgraph pipeline
+        GLFWwindow & VkSurface --> vkGetPhysicalDeviceSurfaceCapabilitiesKHR@{ shape: hex } --> swapchain_caps@{ shape: rounded } --> swapchain_extent@{ shape: rounded }
+        GLFWwindow & VkSurface --> vkGetPhysicalDeviceSurfaceFormatsKHR@{ shape: hex } --> swapchain_formats@{ shape: rounded }
+        VkSurface & swapchain_caps & swapchain_formats & swapchain_extent & graphics_queue_index & present_queue_index --> vkCreateSwapchainKHR@{ shape: hex } --> VkSwapchainKHR
+        VkSwapchainKHR --> vkGetSwapchainImagesKHR@{ shape: hex } --> VkImage@{ shape: processes }
+        VkImage & swapchain_formats --> vkCreateImageView@{ shape: hex } --> VkImageView@{ shape: processes }
+        vertex_shader_code@{ shape: rounded } --> vkCreateShaderModule1@{ shape: hex, label: vkCreateShaderModule } --> VkShaderModule/Vert
+        fragment_shader_code@{ shape: rounded } --> vkCreateShaderModule2@{ shape: hex, label: vkCreateShaderModule } --> VkShaderModule/Frag
+        swapchain_formats --> vkCreateRenderPass@{ shape: hex } --> VkRenderPass
+        vkCreateDescriptorSetLayout@{ shape: hex } --> VkDescriptorSetLayout
+        VkDescriptorSetLayout --> vkCreatePipelineLayout@{ shape: hex } --> VkPipelineLayout
+        vertices --> vertex_binding_desc@{ shape: rounded } & vertex_attr_desc@{ shape: rounded }
+        indices
+
+        subgraph create_pipeline
+            swapchain_extent --> viewport@{ shape: rounded } & scissor@{ shape: rounded }
+            viewport & scissor --> VkPipelineViewportStateCreateInfo
+            VkPipelineColorBlendAttachmentState --> VkPipelineColorBlendStateCreateInfo
+            vertex_binding_desc & vertex_attr_desc --> VkPipelineVertexInputStateCreateInfo
+            VkShaderModule/Vert & VkShaderModule/Frag --> VkPipelineShaderStageCreateInfo
+            VkPipelineViewportStateCreateInfo &  VkPipelineColorBlendStateCreateInfo & VkPipelineVertexInputStateCreateInfo & VkPipelineShaderStageCreateInfo & VkPipelineInputAssemblyStateCreateInfo & VkPipelineDynamicStateCreateInfo & VkPipelineRasterizationStateCreateInfo & VkPipelineMultisampleStateCreateInfo & VkPipelineLayout--> vkCreateGraphicsPipelines@{ shape: hex } --> VkPipeline
+        end
+
+        graphics_queue_index --> vkGetDeviceQueue1@{ shape: hex, label: vkGetDeviceQueue } --> VkQueue/graphics
+        present_queue_index --> vkGetDeviceQueue2@{ shape: hex, label: vkGetDeviceQueue } --> VkQueue/present
+
+        subgraph transfer_vertices
+            vkCreateBuffer@{ shape: hex } --> VkBuffer --> VkDeviceMemory
+            VkBuffer & VkDeviceMemory --> vkBindBufferMemory@{ shape: hex }
+        end
+
+        transfer_vertices@{ shape: hex } --> VkBuffer/vertex & VkDeviceMemory/vertex & VkBuffer/index & VkDeviceMemory/index & VkBuffer/uniform@{ shape: processes } & VkDeviceMemory/uniform@{ shape: processes }
+        vertices --> memcpy1@{ shape: hex, label: memcpy } --> VkDeviceMemory/vertex
+        indices --> memcpy2@{ shape: hex, label: memcpy } --> VkDeviceMemory/index
+
+        VkImageView & VkRenderPass & swapchain_extent --> vkCreateFramebuffer@{ shape: hex } --> VkFramebuffer@{ shape: processes }
+        graphics_queue_index --> vkCreateCommandPool@{ shape: hex } --> VkCommandPool
+        VkCommandPool --> vkAllocateCommandBuffers@{ shape: hex } --> VkCommandBuffer@{ shape: processes }
+        vkCreateDescriptorPool@{ shape: hex } --> VkDescriptorPool
+        VkDescriptorPool & VkDescriptorSetLayout --> vkAllocateDescriptorSets@{ shape: hex } --> VkDescriptorSet@{ shape: processes }
+    end
+
+    subgraph mainloop
+        subgraph pop_image
+            VkSwapChain --> vkAcquireNextImageKHR@{ shape: hex } --> image_index@{ shape: rounded }
+        end
+        subgraph fill_command
+            VkCommandBuffer --> vkBeginCommandBuffer@{ shape: hex }
+            VkRenderPass & VkFramebuffer & swapchain_extent --> vkCmdBeginRenderPass@{ shape: hex }
+            subgraph binds
+                VkPipeline --> vkCmdBindPipeline@{ shape: hex }
+                VkBuffer/vertex --> vkCmdBindVertexBuffers@{ shape: hex }
+                VkBuffer/index --> vkCmdBindIndexBuffer@{ shape: hex }
+                swapchain_extent --> vkCmdSetViewport@{ shape: hex } & vkCmdSetScissor@{ shape: hex }
+                VkPipelineLayout & VkDescriptorSet --> vkCmdBindDescriptorSets@{ shape: hex }
+            end
+            vkBeginCommandBuffer ==> vkCmdBeginRenderPass ==> binds ==> vkCmdDrawIndexed@{ shape: hex } ==> vkCmdEndRenderPass@{ shape: hex } ==> vkEndCommandBuffer@{ shape: hex }
+        end
+        subgraph emit_command
+            VkQueue/graphics --> vkQueueSubmit
+        end
+        subgraph present
+            VkQueue/present & VkSwapChain & image_index --> vkQueuePresentKHR
+        pop_image ==> fill_command ==> emit_command ==> present ==> pop_image
+    end
