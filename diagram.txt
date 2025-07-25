@@ -60,7 +60,7 @@ flowchart TD
 
     subgraph mainloop
         subgraph pop_image
-            VkSwapChain --> vkAcquireNextImageKHR@{ shape: hex } --> image_index@{ shape: rounded }
+            VkSwapchainKHR --> vkAcquireNextImageKHR@{ shape: hex } --> image_index@{ shape: rounded }
         end
         subgraph fill_command
             VkCommandBuffer --> vkBeginCommandBuffer@{ shape: hex }
@@ -78,6 +78,7 @@ flowchart TD
             VkQueue/graphics --> vkQueueSubmit
         end
         subgraph present
-            VkQueue/present & VkSwapChain & image_index --> vkQueuePresentKHR
+            VkQueue/present & VkSwapchainKHR & image_index --> vkQueuePresentKHR
+        end
         pop_image ==> fill_command ==> emit_command ==> present ==> pop_image
     end
