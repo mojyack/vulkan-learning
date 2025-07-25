@@ -37,6 +37,8 @@ declare_autoptr(VkBuffer, VkBuffer_T, vkDestroyBuffer(default_device, ptr, nullp
 declare_autoptr(VkDeviceMemory, VkDeviceMemory_T, vkFreeMemory(default_device, ptr, nullptr));
 declare_autoptr(VkDescriptorSetLayout, VkDescriptorSetLayout_T, vkDestroyDescriptorSetLayout(default_device, ptr, nullptr));
 declare_autoptr(VkDescriptorPool, VkDescriptorPool_T, vkDestroyDescriptorPool(default_device, ptr, nullptr));
+declare_autoptr(VkImage, VkImage_T, vkDestroyImage(default_device, ptr, nullptr));
+declare_autoptr(VkSampler, VkSampler_T, vkDestroySampler(default_device, ptr, nullptr));
 
 #define vk_args(func, s)            \
     {                               \

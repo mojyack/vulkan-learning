@@ -10,12 +10,14 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "macros/unwrap.hpp"
+#include "pixelbuffer.hpp"
 #include "util/cleaner.hpp"
 #include "vk.hpp"
 
 namespace {
 struct Vertex {
     glm::vec2 pos;
+    glm::vec2 tex_coord;
     glm::vec3 color;
 };
 
@@ -38,13 +40,19 @@ const auto vertex_attr_desc = std::array{
         .format   = VK_FORMAT_R32G32B32_SFLOAT,
         .offset   = offsetof(Vertex, color),
     },
+    VkVertexInputAttributeDescription{
+        .location = 2,
+        .binding  = 0,
+        .format   = VK_FORMAT_R32G32_SFLOAT,
+        .offset   = offsetof(Vertex, tex_coord),
+    },
 };
 
 const auto vertices = std::array{
-    Vertex{{-0.5, -0.5}, {1, 0, 0}},
-    Vertex{{0.5, -0.5}, {0, 1, 0}},
-    Vertex{{0.5, 0.5}, {0, 0, 1}},
-    Vertex{{-0.5, 0.5}, {1, 1, 1}},
+    Vertex{{-0.5, -0.5}, {1, 0}, {1, 0, 0}},
+    Vertex{{0.5, -0.5}, {0, 0}, {0, 1, 0}},
+    Vertex{{0.5, 0.5}, {0, 1}, {0, 0, 1}},
+    Vertex{{-0.5, 0.5}, {1, 1}, {1, 1, 1}},
 };
 
 const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
@@ -248,6 +256,31 @@ auto create_swapchain(VkDevice device, VkSurfaceKHR surface, std::span<const uin
     return swapchain;
 }
 
+auto create_image_view(VkDevice device, VkImage image, VkFormat format) -> VkImageView_T* {
+    auto view = VkImageView();
+    vk_args(vkCreateImageView(device, &info, nullptr, &view),
+            (VkImageViewCreateInfo{
+                .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image      = image,
+                .viewType   = VK_IMAGE_VIEW_TYPE_2D,
+                .format     = format,
+                .components = {
+                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+                .subresourceRange = {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel   = 0,
+                    .levelCount     = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                },
+            }));
+    return view;
+}
+
 auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkFormat& swapchain_format) -> std::optional<std::vector<vk::AutoVkImageView>> {
     // retrieve images from swapchain
     unwrap(swapchain_images, vk::query_array<VkImage>([&](auto... args) { return vkGetSwapchainImagesKHR(device, swapchain, args...); }));
@@ -256,59 +289,79 @@ auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkForma
     // create image views
     auto image_views = std::vector<vk::AutoVkImageView>(swapchain_images.size());
     for(auto&& [image, view] : std::ranges::zip_view(swapchain_images, image_views)) {
-        vk_args(vkCreateImageView(device, &info, nullptr, std::inout_ptr(view)),
-                (VkImageViewCreateInfo{
-                    .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                    .image      = image,
-                    .viewType   = VK_IMAGE_VIEW_TYPE_2D,
-                    .format     = swapchain_format,
-                    .components = {
-                        .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                        .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                        .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                        .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    },
-                    .subresourceRange = {
-                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel   = 0,
-                        .levelCount     = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount     = 1,
-                    },
-                }));
+        unwrap_mut(v, create_image_view(device, image, swapchain_format));
+        view.reset(&v);
     }
     return image_views;
 }
 
+auto create_texture_sampler(VkDevice device) -> VkSampler_T* {
+    auto ret = VkSampler();
+    vk_args(vkCreateSampler(device, &info, nullptr, &ret),
+            (VkSamplerCreateInfo{
+                .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                .magFilter               = VK_FILTER_LINEAR,
+                .minFilter               = VK_FILTER_LINEAR,
+                .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                .addressModeU            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+                .mipLodBias              = 0.0f,
+                .anisotropyEnable        = VK_FALSE,
+                .maxAnisotropy           = 1.0f,
+                .compareEnable           = VK_FALSE,
+                .compareOp               = VK_COMPARE_OP_ALWAYS,
+                .minLod                  = 0.0f,
+                .maxLod                  = 0.0f,
+                .borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+                .unnormalizedCoordinates = VK_FALSE,
+            }));
+    return ret;
+}
+
 auto create_desc_set_layout(VkDevice device) -> VkDescriptorSetLayout_T* {
-    const auto binding = VkDescriptorSetLayoutBinding{
-        .binding         = 0,
-        .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .stageFlags      = VK_SHADER_STAGE_VERTEX_BIT,
+    static const auto bindings = std::array{
+        VkDescriptorSetLayoutBinding{
+            .binding         = 0,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_VERTEX_BIT,
+        },
+        VkDescriptorSetLayoutBinding{
+            .binding         = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
     };
     auto ret = VkDescriptorSetLayout();
     vk_args(vkCreateDescriptorSetLayout(device, &info, nullptr, &ret),
             (VkDescriptorSetLayoutCreateInfo{
                 .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .bindingCount = 1,
-                .pBindings    = &binding,
+                .bindingCount = uint32_t(bindings.size()),
+                .pBindings    = bindings.data(),
             }));
     return ret;
 }
 
 auto create_descriptror_pool(VkDevice device, uint32_t count) -> VkDescriptorPool_T* {
-    const auto pool_size = VkDescriptorPoolSize{
-        .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = count,
+    const auto pool_sizes = std::array{
+        VkDescriptorPoolSize{
+            .type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = count,
+        },
+        VkDescriptorPoolSize{
+            .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = count,
+        },
     };
     auto ret = VkDescriptorPool();
     vk_args(vkCreateDescriptorPool(device, &info, nullptr, &ret),
             (VkDescriptorPoolCreateInfo{
                 .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                 .maxSets       = count,
-                .poolSizeCount = 1,
-                .pPoolSizes    = &pool_size,
+                .poolSizeCount = uint32_t(pool_sizes.size()),
+                .pPoolSizes    = pool_sizes.data(),
             }));
     return ret;
 };
@@ -585,15 +638,85 @@ auto create_uniform_buffers(VkPhysicalDevice phy, VkDevice device, VkDeviceSize 
     return ret;
 }
 
-auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
-    auto command_pool = VkCommandPool();
-    vk_args(vkCreateCommandPool(device, &info, nullptr, &command_pool),
-            (VkCommandPoolCreateInfo{
-                .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                .queueFamilyIndex = uint32_t(graphics_queue_index),
+struct CreateImageInfo {
+    uint32_t              width;
+    uint32_t              height;
+    VkImageTiling         tiling = VK_IMAGE_TILING_OPTIMAL;
+    VkImageUsageFlags     usage  = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkMemoryPropertyFlags props  = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+};
+
+struct CreateImageResult {
+    vk::AutoVkImage        image;
+    vk::AutoVkDeviceMemory memory;
+};
+
+auto create_image(VkPhysicalDevice phy, VkDevice device, CreateImageInfo image_info) -> std::optional<CreateImageResult> {
+    // create image
+    auto image = vk::AutoVkImage();
+    vk_args(vkCreateImage(device, &info, nullptr, std::inout_ptr(image)),
+            (VkImageCreateInfo{
+                .sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format    = VK_FORMAT_R8G8B8A8_SRGB,
+                .extent    = {
+                       .width  = image_info.width,
+                       .height = image_info.height,
+                       .depth  = 1,
+                },
+                .mipLevels     = 1,
+                .arrayLayers   = 1,
+                .samples       = VK_SAMPLE_COUNT_1_BIT,
+                .tiling        = image_info.tiling,
+                .usage         = image_info.usage,
+                .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             }));
-    return command_pool;
+
+    // allocate memory
+    auto requirements = VkMemoryRequirements();
+    vkGetImageMemoryRequirements(device, image.get(), &requirements);
+
+    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, image_info.props));
+    auto memory = vk::AutoVkDeviceMemory();
+    vk_args(vkAllocateMemory(device, &info, nullptr, std::inout_ptr(memory)),
+            (VkMemoryAllocateInfo{
+                .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                .allocationSize  = requirements.size,
+                .memoryTypeIndex = memory_type,
+            }));
+
+    // bind them
+    ensure(vkBindImageMemory(device, image.get(), memory.get(), 0) == VK_SUCCESS);
+
+    return CreateImageResult{std::move(image), std::move(memory)};
+}
+
+struct LoadImageResult {
+    uint32_t               width;
+    uint32_t               height;
+    vk::AutoVkBuffer       buffer;
+    vk::AutoVkDeviceMemory memory;
+};
+
+auto load_image(VkPhysicalDevice phy, VkDevice device, const char* file) -> std::optional<LoadImageResult> {
+    // load pixels
+    unwrap(pixbuf, PixelBuffer::from_file(file));
+    const auto image_size = pixbuf.width * pixbuf.height * 4;
+
+    // create staging buffer
+    unwrap_mut(staging_buffer, create_buffer(phy, device,
+                                             {
+                                                 .size  = image_size,
+                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                             }));
+    {
+        unwrap_mut(mapping, vk::MemoryMapping::map(device, staging_buffer.memory.get(), image_size));
+        std::memcpy(mapping.ptr, pixbuf.data.data(), image_size);
+    }
+
+    return LoadImageResult{uint32_t(pixbuf.width), uint32_t(pixbuf.height), std::move(staging_buffer.buffer), std::move(staging_buffer.memory)};
 }
 
 auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint32_t count) -> std::optional<std::vector<VkCommandBuffer>> {
@@ -609,6 +732,141 @@ auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint3
     return command_buffers;
 }
 
+struct RunCommandInfo {
+    VkDevice      device;
+    VkCommandPool command_pool;
+    VkQueue       queue;
+};
+
+auto run_oneshot_command(RunCommandInfo run_info, auto callback) -> bool {
+    unwrap(command_buffers, allocate_command_buffers(run_info.device, run_info.command_pool, 1));
+    const auto command_buffers_cleaner = Cleaner{[&] { vkFreeCommandBuffers(run_info.device, run_info.command_pool, command_buffers.size(), command_buffers.data()); }};
+
+    vk_args(vkBeginCommandBuffer(command_buffers[0], &info),
+            (VkCommandBufferBeginInfo{
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            }));
+
+    ensure(callback(command_buffers[0]));
+
+    vkEndCommandBuffer(command_buffers[0]);
+    vk_args(vkQueueSubmit(run_info.queue, 1, &info, VK_NULL_HANDLE),
+            (VkSubmitInfo{
+                .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .commandBufferCount = uint32_t(command_buffers.size()),
+                .pCommandBuffers    = command_buffers.data(),
+            }));
+    ensure(vkQueueWaitIdle(run_info.queue) == VK_SUCCESS);
+    return true;
+}
+
+auto copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height, RunCommandInfo run_info) -> bool {
+    ensure(run_oneshot_command(run_info, [=](VkCommandBuffer command_buffer) -> bool {
+        vk_args_noret(vkCmdCopyBufferToImage(command_buffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &info),
+                      (VkBufferImageCopy{
+                          .bufferOffset      = 0,
+                          .bufferRowLength   = 0,
+                          .bufferImageHeight = 0,
+                          .imageSubresource  = {
+                               .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .mipLevel       = 0,
+                               .baseArrayLayer = 0,
+                               .layerCount     = 1,
+                          },
+                          .imageOffset = {0, 0, 0},
+                          .imageExtent = {width, height, 1},
+                      }));
+        return true;
+    }));
+    return true;
+}
+
+auto transition_image_layout(VkImage image, VkFormat format, VkImageLayout from, VkImageLayout to, RunCommandInfo run_info) -> bool {
+    struct Entry {
+        VkImageLayout        from;
+        VkImageLayout        to;
+        VkPipelineStageFlags src_stage;
+        VkPipelineStageFlags dst_stage;
+        VkAccessFlags        src_access;
+        VkAccessFlags        dst_access;
+    };
+    static const auto table = std::array{
+        Entry{
+            .from       = VK_IMAGE_LAYOUT_UNDEFINED,
+            .to         = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .src_stage  = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            .dst_stage  = VK_PIPELINE_STAGE_TRANSFER_BIT,
+            .src_access = 0,
+            .dst_access = VK_ACCESS_TRANSFER_WRITE_BIT,
+        },
+        Entry{
+            .from       = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .to         = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .src_stage  = VK_PIPELINE_STAGE_TRANSFER_BIT,
+            .dst_stage  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            .src_access = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dst_access = VK_ACCESS_SHADER_READ_BIT,
+        },
+    };
+
+    auto conf = (const Entry*)(nullptr);
+    for(const auto& entry : table) {
+        if(entry.from == from && entry.to == to) {
+            conf = &entry;
+            break;
+        }
+    }
+    ensure(conf);
+
+    ensure(run_oneshot_command(run_info, [=](VkCommandBuffer command_buffer) {
+        vk_args_noret(vkCmdPipelineBarrier(command_buffer, conf->src_stage, conf->dst_stage, 0, 0, nullptr, 0, nullptr, 1, &info),
+                      (VkImageMemoryBarrier{
+                          .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                          .srcAccessMask       = conf->src_access,
+                          .dstAccessMask       = conf->dst_access,
+                          .oldLayout           = from,
+                          .newLayout           = to,
+                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                          .image               = image,
+                          .subresourceRange    = {
+                                 .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                 .baseMipLevel   = 0,
+                                 .levelCount     = 1,
+                                 .baseArrayLayer = 0,
+                                 .layerCount     = 1,
+                          },
+                      }));
+        return true;
+    }));
+    return true;
+}
+
+auto create_texture_image(VkPhysicalDevice phy, VkDevice device, VkCommandPool command_pool, VkQueue queue, const char* file) -> std::optional<CreateImageResult> {
+    unwrap_mut(pix, load_image(phy, device, file));
+    unwrap_mut(buffer, create_image(phy, device,
+                                    {
+                                        .width  = pix.width,
+                                        .height = pix.height,
+                                    }));
+    ensure(transition_image_layout(buffer.image.get(), VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, {device, command_pool, queue}));
+    ensure(copy_buffer_to_image(pix.buffer.get(), buffer.image.get(), pix.width, pix.height, {device, command_pool, queue}));
+    ensure(transition_image_layout(buffer.image.get(), VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, {device, command_pool, queue}));
+    return std::move(buffer);
+}
+
+auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
+    auto command_pool = VkCommandPool();
+    vk_args(vkCreateCommandPool(device, &info, nullptr, &command_pool),
+            (VkCommandPoolCreateInfo{
+                .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = uint32_t(graphics_queue_index),
+            }));
+    return command_pool;
+}
+
 struct CopyBufferInfo {
     VkCommandPool command_pool;
     VkQueue       queue;
@@ -618,26 +876,13 @@ struct CopyBufferInfo {
 };
 
 auto copy_buffer(VkDevice device, CopyBufferInfo copy_info) -> bool {
-    unwrap(command_buffers, allocate_command_buffers(device, copy_info.command_pool, 1));
-    const auto command_buffers_cleaner = Cleaner{[&] { vkFreeCommandBuffers(device, copy_info.command_pool, command_buffers.size(), command_buffers.data()); }};
-
-    vk_args(vkBeginCommandBuffer(command_buffers[0], &info),
-            (VkCommandBufferBeginInfo{
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            }));
-    vk_args_noret(vkCmdCopyBuffer(command_buffers[0], copy_info.src, copy_info.dst, 1, &info),
-                  (VkBufferCopy{
-                      .size = copy_info.size,
-                  }));
-    vkEndCommandBuffer(command_buffers[0]);
-    vk_args(vkQueueSubmit(copy_info.queue, 1, &info, VK_NULL_HANDLE),
-            (VkSubmitInfo{
-                .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .commandBufferCount = uint32_t(command_buffers.size()),
-                .pCommandBuffers    = command_buffers.data(),
-            }));
-    ensure(vkQueueWaitIdle(copy_info.queue) == VK_SUCCESS);
+    ensure(run_oneshot_command({device, copy_info.command_pool, copy_info.queue}, [&copy_info](VkCommandBuffer command_buffer) -> bool {
+        vk_args_noret(vkCmdCopyBuffer(command_buffer, copy_info.src, copy_info.dst, 1, &info),
+                      (VkBufferCopy{
+                          .size = copy_info.size,
+                      }));
+        return true;
+    }));
     return true;
 }
 
@@ -944,22 +1189,46 @@ auto vulkan_main(GLFWwindow& window) -> bool {
                          }));
     // allocate uniform buffer
     unwrap(uniform_buffers, create_uniform_buffers(context.phy, context.device.get(), sizeof(UniformBufferObject), max_frames_in_flight));
+    // create texture
+    unwrap_mut(tex, create_texture_image(context.phy, context.device.get(), context.command_pool.get(), graphics_queue, "textures/icon.png"));
+    unwrap_mut(tex_view, create_image_view(context.device.get(), tex.image.get(), VK_FORMAT_R8G8B8A8_SRGB));
+    const auto auto_tex_view = vk::AutoVkImageView(&tex_view);
+    unwrap_mut(sampler, create_texture_sampler(context.device.get()));
+    const auto auto_sampler = vk::AutoVkSampler(&sampler);
+    // update descriptor set
     for(auto&& [set, ubuf] : std::ranges::zip_view(context.desc_sets, uniform_buffers)) {
         const auto buffer_info = VkDescriptorBufferInfo{
             .buffer = ubuf.buffer.get(),
             .offset = 0,
             .range  = sizeof(UniformBufferObject),
         };
-        vk_args_noret(vkUpdateDescriptorSets(context.device.get(), 1, &info, 0, nullptr),
-                      (VkWriteDescriptorSet{
-                          .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                          .dstSet          = set,
-                          .dstBinding      = 0,
-                          .dstArrayElement = 0,
-                          .descriptorCount = 1,
-                          .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                          .pBufferInfo     = &buffer_info,
-                      }));
+        const auto image_info = VkDescriptorImageInfo{
+            .sampler     = &sampler,
+            .imageView   = &tex_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+
+        const auto desc_writes = std::array{
+            VkWriteDescriptorSet{
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = set,
+                .dstBinding      = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pBufferInfo     = &buffer_info,
+            },
+            VkWriteDescriptorSet{
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = set,
+                .dstBinding      = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo      = &image_info,
+            },
+        };
+        vkUpdateDescriptorSets(context.device.get(), desc_writes.size(), desc_writes.data(), 0, nullptr);
     }
 
     auto count = 0uz;
