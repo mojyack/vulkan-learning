@@ -10,7 +10,7 @@ flowchart TD
         Function@{ shape: hex }
     end
     subgraph device
-        VkCreateInstance@{ shape: hex } --> VkInstance
+        vkCreateInstance@{ shape: hex } --> VkInstance
         GLFWwindow & VkInstance --> glfwCreateWindowSurface@{ shape: hex } --> VkSurface
         VkInstance --> vkEnumeratePhysicalDevices@{ shape: hex } --> VkPhysicalDevice@{ shape: processes }
         VkInstance --> vkGetPhysicalDeviceQueueFamilyProperties@{ shape: hex } --> graphics_queue_index@{ shape: rounded } & present_queue_index@{ shape: rounded }
