@@ -6,12 +6,13 @@
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "buffer.hpp"
+#include "image.hpp"
 #include "macros/unwrap.hpp"
-#include "pixelbuffer.hpp"
-#include "util/cleaner.hpp"
 #include "vk.hpp"
 
 namespace {
@@ -49,13 +50,21 @@ const auto vertex_attr_desc = std::array{
 };
 
 const auto vertices = std::array{
+    // 1
     Vertex{{-0.5, -0.5, 0.0}, {1, 0, 0}, {1, 0}},
     Vertex{{0.5, -0.5, 0.0}, {0, 1, 0}, {0, 0}},
     Vertex{{0.5, 0.5, 0.0}, {0, 0, 1}, {0, 1}},
     Vertex{{-0.5, 0.5, 0.0}, {1, 1, 1}, {1, 1}},
+    // 2
+    Vertex{{-0.5, -0.5, -0.5}, {1, 0, 0}, {1, 0}},
+    Vertex{{0.5, -0.5, -0.5}, {0, 1, 0}, {0, 0}},
+    Vertex{{0.5, 0.5, -0.5}, {0, 0, 1}, {0, 1}},
+    Vertex{{-0.5, 0.5, -0.5}, {1, 1, 1}, {1, 1}},
 };
 
-const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
+const auto indices = std::array<uint16_t, 12>{
+    0, 1, 2, 2, 3, 0,
+    4, 5, 6, 6, 7, 4};
 
 struct UniformBufferObject {
     glm::mat4 model;
@@ -256,32 +265,7 @@ auto create_swapchain(VkDevice device, VkSurfaceKHR surface, std::span<const uin
     return swapchain;
 }
 
-auto create_image_view(VkDevice device, VkImage image, VkFormat format) -> VkImageView_T* {
-    auto view = VkImageView();
-    vk_args(vkCreateImageView(device, &info, nullptr, &view),
-            (VkImageViewCreateInfo{
-                .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image      = image,
-                .viewType   = VK_IMAGE_VIEW_TYPE_2D,
-                .format     = format,
-                .components = {
-                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-                .subresourceRange = {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-            }));
-    return view;
-}
-
-auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkFormat& swapchain_format) -> std::optional<std::vector<vk::AutoVkImageView>> {
+auto create_swapchain_image_views(VkDevice device, VkSwapchainKHR swapchain, CreateImageViewInfo create_info) -> std::optional<std::vector<vk::AutoVkImageView>> {
     // retrieve images from swapchain
     unwrap(swapchain_images, vk::query_array<VkImage>([&](auto... args) { return vkGetSwapchainImagesKHR(device, swapchain, args...); }));
     PRINT("images={}", swapchain_images.size());
@@ -289,7 +273,7 @@ auto create_image_views(VkDevice device, VkSwapchainKHR swapchain, const VkForma
     // create image views
     auto image_views = std::vector<vk::AutoVkImageView>(swapchain_images.size());
     for(auto&& [image, view] : std::ranges::zip_view(swapchain_images, image_views)) {
-        unwrap_mut(v, create_image_view(device, image, swapchain_format));
+        unwrap_mut(v, create_image_view(device, image, create_info));
         view.reset(&v);
     }
     return image_views;
@@ -390,10 +374,10 @@ auto create_pipeline_layout(VkDevice device, VkDescriptorSetLayout desc_set_layo
     return pipeline_layout;
 }
 
-auto create_render_pass(VkDevice device, VkFormat format) -> VkRenderPass_T* {
+auto create_render_pass(VkDevice device, VkFormat color_format, VkFormat depth_format) -> VkRenderPass_T* {
     // attachments
     const auto color_attachment = VkAttachmentDescription{
-        .format         = format,
+        .format         = color_format,
         .samples        = VK_SAMPLE_COUNT_1_BIT,
         .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
@@ -406,20 +390,35 @@ auto create_render_pass(VkDevice device, VkFormat format) -> VkRenderPass_T* {
         .attachment = 0,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
+    const auto depth_attachment = VkAttachmentDescription{
+        .format         = depth_format,
+        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    const auto depth_attachment_ref = VkAttachmentReference{
+        .attachment = 0,
+        .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
     const auto subpass = VkSubpassDescription{
-        .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .colorAttachmentCount = 1,
-        .pColorAttachments    = &color_attachment_ref,
+        .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount    = 1,
+        .pColorAttachments       = &color_attachment_ref,
+        .pDepthStencilAttachment = &depth_attachment_ref,
     };
 
     // render pass
     const auto subpass_dep = VkSubpassDependency{
         .srcSubpass    = VK_SUBPASS_EXTERNAL,
         .dstSubpass    = 0,
-        .srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
     auto render_pass = VkRenderPass();
@@ -487,6 +486,17 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
         .sampleShadingEnable  = VK_FALSE,
     };
+    // depth test
+    const auto depth_stencil_create_info = VkPipelineDepthStencilStateCreateInfo{
+        .sType                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable       = VK_TRUE,
+        .depthWriteEnable      = VK_TRUE,
+        .depthCompareOp        = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable     = VK_FALSE,
+        .minDepthBounds        = 0,
+        .maxDepthBounds        = 1,
+    };
     // color blending
     const auto color_blend_attach_state = VkPipelineColorBlendAttachmentState{
         .blendEnable    = VK_FALSE,
@@ -533,7 +543,7 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
                 .pViewportState      = &viewport_state_create_info,
                 .pRasterizationState = &rasterizer_state_create_info,
                 .pMultisampleState   = &multisample_state_create_info,
-                .pDepthStencilState  = nullptr,
+                .pDepthStencilState  = &depth_stencil_create_info,
                 .pColorBlendState    = &color_blend_state_create_info,
                 .pDynamicState       = &dynamic_state_create_info,
                 .layout              = pipeline_layout,
@@ -543,10 +553,10 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
     return pipeline;
 }
 
-auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> image_views, VkRenderPass render_pass, VkExtent2D swapchain_extent) -> std::optional<std::vector<vk::AutoVkFramebuffer>> {
+auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> image_views, VkImageView depth_image_view, VkRenderPass render_pass, VkExtent2D swapchain_extent) -> std::optional<std::vector<vk::AutoVkFramebuffer>> {
     auto framebuffers = std::vector<vk::AutoVkFramebuffer>(image_views.size());
     for(auto&& [fb, image] : std::ranges::zip_view(framebuffers, image_views)) {
-        const auto attachments = std::array{image.get()};
+        const auto attachments = std::array{image.get(), depth_image_view};
         vk_args(vkCreateFramebuffer(device, &info, nullptr, std::inout_ptr(fb)),
                 (VkFramebufferCreateInfo{
                     .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -559,227 +569,6 @@ auto create_framebuffers(VkDevice device, std::span<const vk::AutoVkImageView> i
                 }));
     }
     return framebuffers;
-}
-
-auto find_memory_type(VkPhysicalDevice phy, uint32_t type_filter, VkMemoryPropertyFlags properties) -> std::optional<uint32_t> {
-    auto memory_properties = VkPhysicalDeviceMemoryProperties();
-    vkGetPhysicalDeviceMemoryProperties(phy, &memory_properties);
-    for(auto i = 0u; i < memory_properties.memoryTypeCount; i += 1) {
-        if(!(type_filter & (1 << i))) {
-            continue;
-        }
-        if((memory_properties.memoryTypes[i].propertyFlags & properties) != properties) {
-            continue;
-        }
-        return i;
-    }
-    bail("failed to find suitable memory type");
-}
-
-struct CreateBufferInfo {
-    VkDeviceSize          size;
-    VkBufferUsageFlags    usage;
-    VkMemoryPropertyFlags props;
-};
-
-struct CreateBufferResult {
-    vk::AutoVkBuffer       buffer;
-    vk::AutoVkDeviceMemory memory;
-};
-
-auto create_buffer(VkPhysicalDevice phy, VkDevice device, CreateBufferInfo create_info) -> std::optional<CreateBufferResult> {
-    // create buffer
-    auto buffer = vk::AutoVkBuffer();
-    vk_args(vkCreateBuffer(device, &info, nullptr, std::inout_ptr(buffer)),
-            (VkBufferCreateInfo{
-                .sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size        = create_info.size,
-                .usage       = create_info.usage,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            }));
-
-    // allocate memory
-    auto requirements = VkMemoryRequirements();
-    vkGetBufferMemoryRequirements(device, buffer.get(), &requirements);
-
-    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, create_info.props));
-    auto memory = vk::AutoVkDeviceMemory();
-    vk_args(vkAllocateMemory(device, &info, nullptr, std::inout_ptr(memory)),
-            (VkMemoryAllocateInfo{
-                .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .allocationSize  = requirements.size,
-                .memoryTypeIndex = memory_type,
-            }));
-
-    // bind them
-    ensure(vkBindBufferMemory(device, buffer.get(), memory.get(), 0) == VK_SUCCESS);
-
-    return CreateBufferResult{std::move(buffer), std::move(memory)};
-}
-
-struct UniformBuffer {
-    vk::AutoVkBuffer       buffer;
-    vk::AutoVkDeviceMemory memory;
-    vk::MemoryMapping      mapping;
-};
-
-auto create_uniform_buffers(VkPhysicalDevice phy, VkDevice device, VkDeviceSize size, size_t count) -> std::optional<std::vector<UniformBuffer>> {
-    auto ret = std::vector<UniformBuffer>(count);
-    for(auto& ubuf : ret) {
-        unwrap_mut(buf, create_buffer(phy, device,
-                                      {
-                                          .size  = size,
-                                          .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                          .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                      }));
-        unwrap_mut(map, vk::MemoryMapping::map(device, buf.memory.get(), size));
-        ubuf = UniformBuffer{std::move(buf.buffer), std::move(buf.memory), std::move(map)};
-    }
-    return ret;
-}
-
-struct CreateImageInfo {
-    uint32_t              width;
-    uint32_t              height;
-    VkImageTiling         tiling = VK_IMAGE_TILING_OPTIMAL;
-    VkImageUsageFlags     usage  = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    VkMemoryPropertyFlags props  = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-};
-
-struct CreateImageResult {
-    vk::AutoVkImage        image;
-    vk::AutoVkDeviceMemory memory;
-};
-
-auto create_image(VkPhysicalDevice phy, VkDevice device, CreateImageInfo image_info) -> std::optional<CreateImageResult> {
-    // create image
-    auto image = vk::AutoVkImage();
-    vk_args(vkCreateImage(device, &info, nullptr, std::inout_ptr(image)),
-            (VkImageCreateInfo{
-                .sType     = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                .imageType = VK_IMAGE_TYPE_2D,
-                .format    = VK_FORMAT_R8G8B8A8_SRGB,
-                .extent    = {
-                       .width  = image_info.width,
-                       .height = image_info.height,
-                       .depth  = 1,
-                },
-                .mipLevels     = 1,
-                .arrayLayers   = 1,
-                .samples       = VK_SAMPLE_COUNT_1_BIT,
-                .tiling        = image_info.tiling,
-                .usage         = image_info.usage,
-                .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            }));
-
-    // allocate memory
-    auto requirements = VkMemoryRequirements();
-    vkGetImageMemoryRequirements(device, image.get(), &requirements);
-
-    unwrap(memory_type, find_memory_type(phy, requirements.memoryTypeBits, image_info.props));
-    auto memory = vk::AutoVkDeviceMemory();
-    vk_args(vkAllocateMemory(device, &info, nullptr, std::inout_ptr(memory)),
-            (VkMemoryAllocateInfo{
-                .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                .allocationSize  = requirements.size,
-                .memoryTypeIndex = memory_type,
-            }));
-
-    // bind them
-    ensure(vkBindImageMemory(device, image.get(), memory.get(), 0) == VK_SUCCESS);
-
-    return CreateImageResult{std::move(image), std::move(memory)};
-}
-
-struct LoadImageResult {
-    uint32_t               width;
-    uint32_t               height;
-    vk::AutoVkBuffer       buffer;
-    vk::AutoVkDeviceMemory memory;
-};
-
-auto load_image(VkPhysicalDevice phy, VkDevice device, const char* file) -> std::optional<LoadImageResult> {
-    // load pixels
-    unwrap(pixbuf, PixelBuffer::from_file(file));
-    const auto image_size = pixbuf.width * pixbuf.height * 4;
-
-    // create staging buffer
-    unwrap_mut(staging_buffer, create_buffer(phy, device,
-                                             {
-                                                 .size  = image_size,
-                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                             }));
-    {
-        unwrap_mut(mapping, vk::MemoryMapping::map(device, staging_buffer.memory.get(), image_size));
-        std::memcpy(mapping.ptr, pixbuf.data.data(), image_size);
-    }
-
-    return LoadImageResult{uint32_t(pixbuf.width), uint32_t(pixbuf.height), std::move(staging_buffer.buffer), std::move(staging_buffer.memory)};
-}
-
-auto allocate_command_buffers(VkDevice device, VkCommandPool command_pool, uint32_t count) -> std::optional<std::vector<VkCommandBuffer>> {
-    // TODO: should call vkFreeCommandBuffers
-    auto command_buffers = std::vector<VkCommandBuffer>(count);
-    vk_args(vkAllocateCommandBuffers(device, &info, command_buffers.data()),
-            (VkCommandBufferAllocateInfo{
-                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandPool        = command_pool,
-                .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = count,
-            }));
-    return command_buffers;
-}
-
-struct RunCommandInfo {
-    VkDevice      device;
-    VkCommandPool command_pool;
-    VkQueue       queue;
-};
-
-auto run_oneshot_command(RunCommandInfo run_info, auto callback) -> bool {
-    unwrap(command_buffers, allocate_command_buffers(run_info.device, run_info.command_pool, 1));
-    const auto command_buffers_cleaner = Cleaner{[&] { vkFreeCommandBuffers(run_info.device, run_info.command_pool, command_buffers.size(), command_buffers.data()); }};
-
-    vk_args(vkBeginCommandBuffer(command_buffers[0], &info),
-            (VkCommandBufferBeginInfo{
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            }));
-
-    ensure(callback(command_buffers[0]));
-
-    vkEndCommandBuffer(command_buffers[0]);
-    vk_args(vkQueueSubmit(run_info.queue, 1, &info, VK_NULL_HANDLE),
-            (VkSubmitInfo{
-                .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .commandBufferCount = uint32_t(command_buffers.size()),
-                .pCommandBuffers    = command_buffers.data(),
-            }));
-    ensure(vkQueueWaitIdle(run_info.queue) == VK_SUCCESS);
-    return true;
-}
-
-auto copy_buffer_to_image(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height, RunCommandInfo run_info) -> bool {
-    ensure(run_oneshot_command(run_info, [=](VkCommandBuffer command_buffer) -> bool {
-        vk_args_noret(vkCmdCopyBufferToImage(command_buffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &info),
-                      (VkBufferImageCopy{
-                          .bufferOffset      = 0,
-                          .bufferRowLength   = 0,
-                          .bufferImageHeight = 0,
-                          .imageSubresource  = {
-                               .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                               .mipLevel       = 0,
-                               .baseArrayLayer = 0,
-                               .layerCount     = 1,
-                          },
-                          .imageOffset = {0, 0, 0},
-                          .imageExtent = {width, height, 1},
-                      }));
-        return true;
-    }));
-    return true;
 }
 
 auto transition_image_layout(VkImage image, VkFormat format, VkImageLayout from, VkImageLayout to, RunCommandInfo run_info) -> bool {
@@ -856,6 +645,36 @@ auto create_texture_image(VkPhysicalDevice phy, VkDevice device, VkCommandPool c
     return std::move(buffer);
 }
 
+auto find_supported_format(VkPhysicalDevice phy, std::span<const VkFormat> cands, VkImageTiling tiling, VkFormatFeatureFlags features) -> std::optional<VkFormat> {
+    for(const auto format : cands) {
+        auto props = VkFormatProperties();
+        vkGetPhysicalDeviceFormatProperties(phy, format, &props);
+        if(tiling == VK_IMAGE_TILING_LINEAR && (props.linearTilingFeatures & features) & features) {
+            return format;
+        }
+        if(tiling == VK_IMAGE_TILING_OPTIMAL && (props.optimalTilingFeatures & features) & features) {
+            return format;
+        }
+    }
+    return {};
+}
+
+auto find_depth_format(VkPhysicalDevice phy) -> std::optional<VkFormat> {
+    return find_supported_format(
+        phy,
+        std::array{VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
+        VK_IMAGE_TILING_OPTIMAL,
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
+auto has_stencil_component(VkFormat format) -> bool {
+    return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+auto create_depth_resources(VkPhysicalDevice phy, VkDevice device, VkExtent2D extent) -> void {
+    // autoptr
+}
+
 auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCommandPool_T* {
     auto command_pool = VkCommandPool();
     vk_args(vkCreateCommandPool(device, &info, nullptr, &command_pool),
@@ -865,25 +684,6 @@ auto create_command_pool(VkDevice device, uint32_t graphics_queue_index) -> VkCo
                 .queueFamilyIndex = uint32_t(graphics_queue_index),
             }));
     return command_pool;
-}
-
-struct CopyBufferInfo {
-    VkCommandPool command_pool;
-    VkQueue       queue;
-    VkBuffer      src;
-    VkBuffer      dst;
-    VkDeviceSize  size;
-};
-
-auto copy_buffer(VkDevice device, CopyBufferInfo copy_info) -> bool {
-    ensure(run_oneshot_command({device, copy_info.command_pool, copy_info.queue}, [&copy_info](VkCommandBuffer command_buffer) -> bool {
-        vk_args_noret(vkCmdCopyBuffer(command_buffer, copy_info.src, copy_info.dst, 1, &info),
-                      (VkBufferCopy{
-                          .size = copy_info.size,
-                      }));
-        return true;
-    }));
-    return true;
 }
 
 auto create_semaphores(VkDevice device, uint32_t count) -> std::optional<std::vector<vk::AutoVkSemaphore>> {
@@ -927,7 +727,10 @@ auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
                 .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 .flags = 0,
             }));
-    const auto clear_color = VkClearValue{.color = {.float32 = {0, 0, 0, 1}}};
+    const auto clear_colors = std::array{
+        VkClearValue{.color = {.float32 = {0, 0, 0, 1}}},
+        VkClearValue{.depthStencil = {1.0f, 0}},
+    };
     vk_args_noret(vkCmdBeginRenderPass(rec_info.command_buffer, &info, VK_SUBPASS_CONTENTS_INLINE),
                   (VkRenderPassBeginInfo{
                       .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -937,8 +740,8 @@ auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
                            .offset = {0, 0},
                            .extent = rec_info.extent,
                       },
-                      .clearValueCount = 1,
-                      .pClearValues    = &clear_color,
+                      .clearValueCount = clear_colors.size(),
+                      .pClearValues    = clear_colors.data(),
                   }));
     vkCmdBindPipeline(rec_info.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rec_info.pipeline);
     const auto vertex_buffers = std::array{rec_info.vertex_buffer};
@@ -976,6 +779,9 @@ struct Context {
     SwapchainParams                    swapchain_params;
     vk::AutoVkSwapchain                swapchain;
     std::vector<vk::AutoVkImageView>   swapchain_images;
+    VkFormat                           depth_format;
+    CreateImageResult                  depth_buffer;
+    vk::AutoVkImageView                depth_image;
     vk::AutoVkShaderModule             vertex_shader;
     vk::AutoVkShaderModule             fragment_shader;
     vk::AutoVkDescriptorSetLayout      desc_set_layout;
@@ -1051,51 +857,21 @@ auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
     context.swapchain_params = swapchain_params;
     unwrap_mut(swapchain, create_swapchain(context.device.get(), context.surface.get(), queue_indices, context.swapchain_params));
     context.swapchain.reset(&swapchain);
-    unwrap_mut(swapchain_images, create_image_views(context.device.get(), context.swapchain.get(), context.swapchain_params.format.format));
+    unwrap_mut(swapchain_images, create_swapchain_image_views(context.device.get(), context.swapchain.get(), {.format = context.swapchain_params.format.format}));
     context.swapchain_images = std::move(swapchain_images);
-    unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), context.swapchain_params.extent));
+    unwrap_mut(depth_buffer, create_image(context.phy, context.device.get(),
+                                          {
+                                              .width  = context.swapchain_params.extent.width,
+                                              .height = context.swapchain_params.extent.height,
+                                              .format = context.depth_format,
+                                              .usage  = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                          }));
+    context.depth_buffer = std::move(depth_buffer);
+    unwrap_mut(depth_image, create_image_view(context.device.get(), context.depth_buffer.image.get(), {.format = context.depth_format, .aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT}));
+    context.depth_image.reset(&depth_image);
+    unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.depth_image.get(), context.render_pass.get(), context.swapchain_params.extent));
     context.framebuffers = std::move(framebuffers);
     return true;
-}
-
-struct TransferMemoryInfo {
-    VkPhysicalDevice   phy;
-    VkDevice           device;
-    VkCommandPool      command_pool;
-    VkQueue            queue;
-    VkBufferUsageFlags usage;
-    const void*        ptr;
-    size_t             size;
-};
-
-auto transfer_memory(TransferMemoryInfo x_info) -> std::optional<CreateBufferResult> {
-    // create staging buffer
-    unwrap_mut(staging_buffer, create_buffer(x_info.phy, x_info.device,
-                                             {
-                                                 .size  = x_info.size,
-                                                 .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                                 .props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                             }));
-    // create device local buffer
-    unwrap_mut(local_buffer, create_buffer(x_info.phy, x_info.device,
-                                           {
-                                               .size  = x_info.size,
-                                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | x_info.usage,
-                                               .props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                           }));
-    // upload to staging buffer
-    {
-        unwrap_mut(mapping, vk::MemoryMapping::map(x_info.device, staging_buffer.memory.get(), x_info.size));
-        std::memcpy(mapping.ptr, x_info.ptr, x_info.size);
-    }
-    // copy staging to local buffer
-    ensure(copy_buffer(x_info.device,
-                       {.command_pool = x_info.command_pool,
-                        .queue        = x_info.queue,
-                        .src          = staging_buffer.buffer.get(),
-                        .dst          = local_buffer.buffer.get(),
-                        .size         = x_info.size}));
-    return std::move(local_buffer);
 }
 
 auto vulkan_main(GLFWwindow& window) -> bool {
@@ -1136,8 +912,12 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.swapchain.reset(&swapchain);
     }
     {
-        unwrap_mut(swapchain_images, create_image_views(context.device.get(), context.swapchain.get(), context.swapchain_params.format.format));
+        unwrap_mut(swapchain_images, create_swapchain_image_views(context.device.get(), context.swapchain.get(), {.format = context.swapchain_params.format.format}));
         context.swapchain_images = std::move(swapchain_images);
+    }
+    {
+        unwrap(depth_format, find_depth_format(context.phy));
+        context.depth_format = depth_format;
     }
     {
         unwrap_mut(vert, vk::create_shader_module(context.device.get(), "build/vert.spv"));
@@ -1146,8 +926,26 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.fragment_shader.reset(&frag);
     }
     {
-        unwrap_mut(render_pass, create_render_pass(context.device.get(), context.swapchain_params.format.format));
+        unwrap_mut(render_pass, create_render_pass(context.device.get(), context.swapchain_params.format.format, context.depth_format));
         context.render_pass.reset(&render_pass);
+    }
+    {
+        unwrap_mut(depth_buffer, create_image(context.phy, context.device.get(),
+                                              {
+                                                  .width  = context.swapchain_params.extent.width,
+                                                  .height = context.swapchain_params.extent.height,
+                                                  .format = context.depth_format,
+                                                  .usage  = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                              }));
+        context.depth_buffer = std::move(depth_buffer);
+    }
+    {
+        unwrap_mut(depth_image, create_image_view(context.device.get(), context.depth_buffer.image.get(), {.format = context.depth_format, .aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT}));
+        context.depth_image.reset(&depth_image);
+    }
+    {
+        unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.depth_image.get(), context.render_pass.get(), context.swapchain_params.extent));
+        context.framebuffers = std::move(framebuffers);
     }
     {
         unwrap_mut(desc_set_layout, create_desc_set_layout(context.device.get()));
@@ -1160,10 +958,6 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     {
         unwrap_mut(pipeline, create_pipeline(context.device.get(), context.render_pass.get(), context.pipeline_layout.get(), context.swapchain_params.extent, context.vertex_shader.get(), context.fragment_shader.get()));
         context.pipeline.reset(&pipeline);
-    }
-    {
-        unwrap_mut(framebuffers, create_framebuffers(context.device.get(), context.swapchain_images, context.render_pass.get(), context.swapchain_params.extent));
-        context.framebuffers = std::move(framebuffers);
     }
     constexpr auto max_frames_in_flight = 2;
     {
@@ -1220,10 +1014,11 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     unwrap(uniform_buffers, create_uniform_buffers(context.phy, context.device.get(), sizeof(UniformBufferObject), max_frames_in_flight));
     // create texture
     unwrap_mut(tex, create_texture_image(context.phy, context.device.get(), context.command_pool.get(), graphics_queue, "textures/icon.png"));
-    unwrap_mut(tex_view, create_image_view(context.device.get(), tex.image.get(), VK_FORMAT_R8G8B8A8_SRGB));
+    unwrap_mut(tex_view, create_image_view(context.device.get(), tex.image.get(), {.format = VK_FORMAT_R8G8B8A8_SRGB}));
     const auto auto_tex_view = vk::AutoVkImageView(&tex_view);
     unwrap_mut(sampler, create_texture_sampler(context.device.get()));
     const auto auto_sampler = vk::AutoVkSampler(&sampler);
+
     // update descriptor set
     for(auto&& [set, ubuf] : std::ranges::zip_view(context.desc_sets, uniform_buffers)) {
         const auto buffer_info = VkDescriptorBufferInfo{
