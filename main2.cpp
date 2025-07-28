@@ -991,12 +991,40 @@ struct Context {
     std::vector<vk::AutoVkSemaphore>   render_finished_semaphores;
     std::vector<vk::AutoVkFence>       in_flight_fences;
     bool                               window_resized = false;
+    bool                               key_w          = false;
+    bool                               key_a          = false;
+    bool                               key_s          = false;
+    bool                               key_d          = false;
+    bool                               key_q          = false;
+    bool                               key_e          = false;
+    bool                               key_shift      = false;
 };
 
 auto on_window_resize(GLFWwindow* window, int width, int height) -> void {
     auto& context = *std::bit_cast<Context*>(glfwGetWindowUserPointer(window));
     PRINT("window resized {}x{}", width, height);
     context.window_resized = true;
+}
+
+auto on_keyboard(GLFWwindow* window, int key, int scancode, int action, int mods) -> void {
+    if(action != GLFW_RELEASE && action != GLFW_PRESS) {
+        return;
+    }
+
+    auto& context = *std::bit_cast<Context*>(glfwGetWindowUserPointer(window));
+#define match(def, var)                     \
+    if(key == def) {                        \
+        context.var = action == GLFW_PRESS; \
+        return;                             \
+    }
+    match(GLFW_KEY_W, key_w);
+    match(GLFW_KEY_A, key_a);
+    match(GLFW_KEY_S, key_s);
+    match(GLFW_KEY_D, key_d);
+    match(GLFW_KEY_Q, key_q);
+    match(GLFW_KEY_E, key_e);
+    match(GLFW_KEY_RIGHT_SHIFT, key_shift);
+#undef case
 }
 
 auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
@@ -1075,6 +1103,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
     glfwSetWindowUserPointer(&window, &context);
     glfwSetFramebufferSizeCallback(&window, on_window_resize);
+    glfwSetKeyCallback(&window, on_keyboard);
 
     {
         unwrap_mut(instance, create_instance());
@@ -1231,7 +1260,8 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         vkUpdateDescriptorSets(context.device.get(), desc_writes.size(), desc_writes.data(), 0, nullptr);
     }
 
-    auto count = 0uz;
+    auto count   = 0uz;
+    auto eye_pos = glm::vec3(1.0f, 0.0f, 2.0f);
 
     while(!glfwWindowShouldClose(&window)) {
         glfwPollEvents();
@@ -1254,13 +1284,28 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 
         ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
 
+        /// update position
+        for(const auto e : std::array{
+                std::tuple(context.key_a, context.key_d, &eye_pos.x),
+                std::tuple(context.key_w, context.key_s, &eye_pos.y),
+                std::tuple(context.key_q, context.key_e, &eye_pos.z),
+            }) {
+            if(std::get<0>(e)) {
+                *std::get<2>(e) -= context.key_shift ? 1 : 0.1;
+            }
+            if(std::get<1>(e)) {
+                *std::get<2>(e) += context.key_shift ? 1 : 0.1;
+            }
+        }
+        std::println("pos={},{},{}", eye_pos.x, eye_pos.y, eye_pos.z);
+
         // update transform
-        const auto time   = count / 60.0f;
+        const auto time   = count / 60.0f * 0;
         const auto aspect = 1.0f * context.swapchain_params.extent.width / context.swapchain_params.extent.height;
 
         auto ubo  = UniformBufferObject();
         ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.view  = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+        ubo.view  = glm::lookAt(eye_pos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         ubo.proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
         ubo.proj[1][1] *= -1;
         std::memcpy(uniform_buffers[current_frame].mapping.ptr, &ubo, sizeof(ubo));
