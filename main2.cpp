@@ -16,7 +16,7 @@
 
 namespace {
 struct Vertex {
-    glm::vec2 pos;
+    glm::vec3 pos;
     glm::vec3 color;
     glm::vec2 tex_coord;
 };
@@ -31,7 +31,7 @@ const auto vertex_attr_desc = std::array{
     VkVertexInputAttributeDescription{
         .location = 0,
         .binding  = 0,
-        .format   = VK_FORMAT_R32G32_SFLOAT,
+        .format   = VK_FORMAT_R32G32B32_SFLOAT,
         .offset   = offsetof(Vertex, pos),
     },
     VkVertexInputAttributeDescription{
@@ -49,10 +49,10 @@ const auto vertex_attr_desc = std::array{
 };
 
 const auto vertices = std::array{
-    Vertex{{-0.5, -0.5}, {1, 0, 0}, {1, 0}},
-    Vertex{{0.5, -0.5}, {0, 1, 0}, {0, 0}},
-    Vertex{{0.5, 0.5}, {0, 0, 1}, {0, 1}},
-    Vertex{{-0.5, 0.5}, {1, 1, 1}, {1, 1}},
+    Vertex{{-0.5, -0.5, 0.0}, {1, 0, 0}, {1, 0}},
+    Vertex{{0.5, -0.5, 0.0}, {0, 1, 0}, {0, 0}},
+    Vertex{{0.5, 0.5, 0.0}, {0, 0, 1}, {0, 1}},
+    Vertex{{-0.5, 0.5, 0.0}, {1, 1, 1}, {1, 1}},
 };
 
 const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
