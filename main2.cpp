@@ -17,8 +17,8 @@
 namespace {
 struct Vertex {
     glm::vec2 pos;
-    glm::vec2 tex_coord;
     glm::vec3 color;
+    glm::vec2 tex_coord;
 };
 
 const auto vertex_binding_desc = VkVertexInputBindingDescription{
@@ -49,10 +49,10 @@ const auto vertex_attr_desc = std::array{
 };
 
 const auto vertices = std::array{
-    Vertex{{-0.5, -0.5}, {1, 0}, {1, 0, 0}},
-    Vertex{{0.5, -0.5}, {0, 0}, {0, 1, 0}},
-    Vertex{{0.5, 0.5}, {0, 1}, {0, 0, 1}},
-    Vertex{{-0.5, 0.5}, {1, 1}, {1, 1, 1}},
+    Vertex{{-0.5, -0.5}, {1, 0, 0}, {1, 0}},
+    Vertex{{0.5, -0.5}, {0, 1, 0}, {0, 0}},
+    Vertex{{0.5, 0.5}, {0, 0, 1}, {0, 1}},
+    Vertex{{-0.5, 0.5}, {1, 1, 1}, {1, 1}},
 };
 
 const auto indices = std::array<uint16_t, 6>{0, 1, 2, 2, 3, 0};
