@@ -1,5 +1,6 @@
 #include <cstring>
 #include <ranges>
+#include <unordered_map>
 #include <vector>
 
 #define GLFW_INCLUDE_VULKAN
@@ -7,8 +8,12 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/hash.hpp>
+
+#include "build/tiny_obj_loader.h"
 
 #include "buffer.hpp"
 #include "image.hpp"
@@ -20,59 +25,33 @@ struct Vertex {
     glm::vec3 pos;
     glm::vec3 color;
     glm::vec2 tex_coord;
+
+    auto operator==(const Vertex& other) const -> bool;
 };
 
-const auto vertex_binding_desc = VkVertexInputBindingDescription{
-    .binding   = 0,
-    .stride    = sizeof(Vertex),
-    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+auto Vertex::operator==(const Vertex& other) const -> bool {
+    return pos == other.pos && color == other.color && tex_coord == other.tex_coord;
+}
+} // namespace
+
+namespace std {
+template <>
+struct hash<Vertex> {
+    static auto operator()(const Vertex& vertex) -> size_t {
+        const auto a = hash<glm::vec3>()(vertex.pos);
+        const auto b = hash<glm::vec3>()(vertex.color);
+        const auto c = hash<glm::vec2>()(vertex.tex_coord);
+        return ((a ^ (b << 1)) >> 1) ^ c << 1;
+    }
 };
+} // namespace std
 
-const auto vertex_attr_desc = std::array{
-    VkVertexInputAttributeDescription{
-        .location = 0,
-        .binding  = 0,
-        .format   = VK_FORMAT_R32G32B32_SFLOAT,
-        .offset   = offsetof(Vertex, pos),
-    },
-    VkVertexInputAttributeDescription{
-        .location = 1,
-        .binding  = 0,
-        .format   = VK_FORMAT_R32G32B32_SFLOAT,
-        .offset   = offsetof(Vertex, color),
-    },
-    VkVertexInputAttributeDescription{
-        .location = 2,
-        .binding  = 0,
-        .format   = VK_FORMAT_R32G32_SFLOAT,
-        .offset   = offsetof(Vertex, tex_coord),
-    },
-};
-
-const auto vertices = std::array{
-    // 1
-    Vertex{{-0.5, -0.5, 0.0}, {1, 0, 0}, {1, 0}},
-    Vertex{{0.5, -0.5, 0.0}, {0, 1, 0}, {0, 0}},
-    Vertex{{0.5, 0.5, 0.0}, {0, 0, 1}, {0, 1}},
-    Vertex{{-0.5, 0.5, 0.0}, {1, 1, 1}, {1, 1}},
-    // 2
-    Vertex{{-0.5, -0.5, -0.5}, {1, 0, 0}, {1, 0}},
-    Vertex{{0.5, -0.5, -0.5}, {0, 1, 0}, {0, 0}},
-    Vertex{{0.5, 0.5, -0.5}, {0, 0, 1}, {0, 1}},
-    Vertex{{-0.5, 0.5, -0.5}, {1, 1, 1}, {1, 1}},
-};
-
-const auto indices = std::array<uint16_t, 12>{
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4};
-
+namespace {
 struct UniformBufferObject {
     glm::mat4 model;
     glm::mat4 view;
     glm::mat4 proj;
 };
-
-constexpr auto invalid_queue_index = (uint32_t)-1;
 
 const auto required_exts = std::array{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
@@ -148,6 +127,7 @@ auto pickup_phy(VkInstance instance, VkSurfaceKHR surface) -> VkPhysicalDevice_T
 
 auto pickup_queues(VkPhysicalDevice phy, VkSurfaceKHR surface) -> std::optional<std::array<uint32_t, 2>> {
     // TODO: this is an experimental implementation
+    constexpr auto invalid_queue_index = (uint32_t)-1;
 
     unwrap(queue_families, vk::query_array<VkQueueFamilyProperties>([phy](auto... args) {vkGetPhysicalDeviceQueueFamilyProperties(phy, args...); return VK_SUCCESS; }));
     PRINT("queues={}", queue_families.size());
@@ -376,32 +356,34 @@ auto create_pipeline_layout(VkDevice device, VkDescriptorSetLayout desc_set_layo
 
 auto create_render_pass(VkDevice device, VkFormat color_format, VkFormat depth_format) -> VkRenderPass_T* {
     // attachments
-    const auto color_attachment = VkAttachmentDescription{
-        .format         = color_format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    const auto attachments = std::array{
+        VkAttachmentDescription{
+            .format         = color_format,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        },
+        VkAttachmentDescription{
+            .format         = depth_format,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        },
     };
     const auto color_attachment_ref = VkAttachmentReference{
         .attachment = 0,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
-    const auto depth_attachment = VkAttachmentDescription{
-        .format         = depth_format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-    };
     const auto depth_attachment_ref = VkAttachmentReference{
-        .attachment = 0,
+        .attachment = 1,
         .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
     const auto subpass = VkSubpassDescription{
@@ -425,8 +407,8 @@ auto create_render_pass(VkDevice device, VkFormat color_format, VkFormat depth_f
     vk_args(vkCreateRenderPass(device, &info, nullptr, &render_pass),
             (VkRenderPassCreateInfo{
                 .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                .attachmentCount = 1,
-                .pAttachments    = &color_attachment,
+                .attachmentCount = attachments.size(),
+                .pAttachments    = attachments.data(),
                 .subpassCount    = 1,
                 .pSubpasses      = &subpass,
                 .dependencyCount = 1,
@@ -510,6 +492,31 @@ auto create_pipeline(VkDevice device, VkRenderPass render_pass, VkPipelineLayout
     };
 
     // pipeline
+    static const auto vertex_binding_desc = VkVertexInputBindingDescription{
+        .binding   = 0,
+        .stride    = sizeof(Vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    static const auto vertex_attr_desc = std::array{
+        VkVertexInputAttributeDescription{
+            .location = 0,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = offsetof(Vertex, pos),
+        },
+        VkVertexInputAttributeDescription{
+            .location = 1,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32B32_SFLOAT,
+            .offset   = offsetof(Vertex, color),
+        },
+        VkVertexInputAttributeDescription{
+            .location = 2,
+            .binding  = 0,
+            .format   = VK_FORMAT_R32G32_SFLOAT,
+            .offset   = offsetof(Vertex, tex_coord),
+        },
+    };
     const auto vertex_input_state_create_info = VkPipelineVertexInputStateCreateInfo{
         .sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount   = 1,
@@ -719,6 +726,7 @@ struct RecordCommandBufferInfo {
     VkCommandBuffer  command_buffer;
     VkPipelineLayout pipeline_layout;
     VkDescriptorSet  desc_set;
+    uint32_t         indices_count;
 };
 
 auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
@@ -747,7 +755,7 @@ auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
     const auto vertex_buffers = std::array{rec_info.vertex_buffer};
     const auto offsets        = std::array{VkDeviceSize(0)};
     vkCmdBindVertexBuffers(rec_info.command_buffer, 0, 1, vertex_buffers.data(), offsets.data());
-    vkCmdBindIndexBuffer(rec_info.command_buffer, rec_info.index_buffer, 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindIndexBuffer(rec_info.command_buffer, rec_info.index_buffer, 0, VK_INDEX_TYPE_UINT32);
     vk_args_noret(vkCmdSetViewport(rec_info.command_buffer, 0, 1, &info),
                   (VkViewport{
                       .x        = 0,
@@ -763,7 +771,7 @@ auto record_command_buffer(RecordCommandBufferInfo rec_info) -> bool {
                       .extent = rec_info.extent,
                   }));
     vkCmdBindDescriptorSets(rec_info.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rec_info.pipeline_layout, 0, 1, &rec_info.desc_set, 0, nullptr);
-    vkCmdDrawIndexed(rec_info.command_buffer, indices.size(), 1, 0, 0, 0);
+    vkCmdDrawIndexed(rec_info.command_buffer, rec_info.indices_count, 1, 0, 0, 0);
     vkCmdEndRenderPass(rec_info.command_buffer);
     ensure(vkEndCommandBuffer(rec_info.command_buffer) == VK_SUCCESS);
     return true;
@@ -990,6 +998,43 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     vkGetDeviceQueue(context.device.get(), context.graphics_queue_index, 0, &graphics_queue);
     vkGetDeviceQueue(context.device.get(), context.present_queue_index, 0, &present_queue);
 
+    // load model
+    auto vertices = std::vector<Vertex>();
+    auto indices  = std::vector<uint32_t>();
+    {
+        auto attr      = tinyobj::attrib_t();
+        auto shapes    = std::vector<tinyobj::shape_t>();
+        auto materials = std::vector<tinyobj::material_t>();
+        auto warn      = std::string();
+        auto err       = std::string();
+        ensure(tinyobj::LoadObj(&attr, &shapes, &materials, &warn, &err, "build/viking_room.obj"), "warn={} err={}", warn, err);
+        auto unique_verticies = std::unordered_map<Vertex, uint32_t>();
+        for(const auto& shape : shapes) {
+            for(const auto& index : shape.mesh.indices) {
+                auto vertex = Vertex{
+                    .pos = {
+                        attr.vertices[3 * index.vertex_index + 0],
+                        attr.vertices[3 * index.vertex_index + 1],
+                        attr.vertices[3 * index.vertex_index + 2],
+                    },
+                    .tex_coord{
+                        attr.texcoords[2 * index.texcoord_index + 0],
+                        1.0 - attr.texcoords[2 * index.texcoord_index + 1],
+                    }};
+                if(const auto iter = unique_verticies.find(vertex); iter != unique_verticies.end()) {
+                    indices.push_back(iter->second);
+                } else {
+                    indices.push_back(vertices.size());
+                    unique_verticies.emplace(std::pair{vertex, vertices.size()});
+                    vertices.emplace_back(vertex);
+                }
+            }
+            const auto a = shape.mesh.indices.size();
+            const auto b = vertices.size();
+            PRINT("load result total={} unique={} {}%", a, b, 100. * b / a);
+        }
+    }
+
     // upload vertex buffer
     unwrap(vertex_buffer, transfer_memory({
                               .phy          = context.phy,
@@ -1013,7 +1058,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     // allocate uniform buffer
     unwrap(uniform_buffers, create_uniform_buffers(context.phy, context.device.get(), sizeof(UniformBufferObject), max_frames_in_flight));
     // create texture
-    unwrap_mut(tex, create_texture_image(context.phy, context.device.get(), context.command_pool.get(), graphics_queue, "textures/icon.png"));
+    unwrap_mut(tex, create_texture_image(context.phy, context.device.get(), context.command_pool.get(), graphics_queue, "build/viking_room.png"));
     unwrap_mut(tex_view, create_image_view(context.device.get(), tex.image.get(), {.format = VK_FORMAT_R8G8B8A8_SRGB}));
     const auto auto_tex_view = vk::AutoVkImageView(&tex_view);
     unwrap_mut(sampler, create_texture_sampler(context.device.get()));
@@ -1117,6 +1162,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
             .command_buffer  = context.command_buffers[current_frame],
             .pipeline_layout = context.pipeline_layout.get(),
             .desc_set        = context.desc_sets[current_frame],
+            .indices_count   = uint32_t(indices.size()),
         }));
         // submit command
         const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
