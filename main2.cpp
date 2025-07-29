@@ -3,6 +3,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_wayland.h>
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -18,6 +21,10 @@
 #include "buffer.hpp"
 #include "image.hpp"
 #include "macros/unwrap.hpp"
+#include "towl/compositor.hpp"
+#include "towl/display.hpp"
+#include "towl/registry.hpp"
+#include "towl/xdg-wm-base.hpp"
 #include "vk.hpp"
 
 namespace {
@@ -53,7 +60,14 @@ struct UniformBufferObject {
     glm::mat4 proj;
 };
 
-const auto required_exts = std::array{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+const auto required_exts = std::array{
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+};
+
+const auto required_device_exts = std::array{
+    VK_KHR_SURFACE_EXTENSION_NAME,
+    VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+};
 
 auto create_instance() -> VkInstance_T* {
     auto app_info = VkApplicationInfo{
@@ -65,19 +79,18 @@ auto create_instance() -> VkInstance_T* {
         .apiVersion         = VK_API_VERSION_1_0,
     };
 
-    auto glfw_exts_count = uint32_t(0);
-    auto glfw_exts       = glfwGetRequiredInstanceExtensions(&glfw_exts_count);
-    ensure(glfw_exts);
-    PRINT("glfw exts:");
-    for(auto i = 0u; i < glfw_exts_count; i += 1) {
-        std::println("- {}", glfw_exts[i]);
-    }
-
+    // auto glfw_exts_count = uint32_t(0);
+    // auto glfw_exts       = glfwGetRequiredInstanceExtensions(&glfw_exts_count);
+    // ensure(glfw_exts);
+    // PRINT("glfw exts:");
+    // for(auto i = 0u; i < glfw_exts_count; i += 1) {
+    //     std::println("- {}", glfw_exts[i]);
+    // }
     auto instance_create_info = VkInstanceCreateInfo{
         .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo        = &app_info,
-        .enabledExtensionCount   = glfw_exts_count,
-        .ppEnabledExtensionNames = glfw_exts,
+        .enabledExtensionCount   = required_device_exts.size(),
+        .ppEnabledExtensionNames = required_device_exts.data(),
     };
     if(true) {
         static const auto layers = std::array{"VK_LAYER_KHRONOS_validation"};
@@ -122,7 +135,7 @@ auto pickup_phy(VkInstance instance, VkSurfaceKHR surface) -> VkPhysicalDevice_T
         }
         return dev;
     }
-    return VK_NULL_HANDLE;
+    bail("could not find suitable phy");
 }
 
 auto pickup_queues(VkPhysicalDevice phy, VkSurfaceKHR surface) -> std::optional<std::array<uint32_t, 2>> {
@@ -181,7 +194,7 @@ struct SwapchainParams {
     VkExtent2D               extent;
 };
 
-auto find_optimal_swapchain_params(GLFWwindow& window, VkPhysicalDevice phy, VkSurfaceKHR surface) -> std::optional<SwapchainParams> {
+auto find_optimal_swapchain_params(VkPhysicalDevice phy, VkSurfaceKHR surface) -> std::optional<SwapchainParams> {
     unwrap(support, vk::SwapchainDetail::query(phy, surface));
     auto params = SwapchainParams{
         .format = support.formats[0],
@@ -195,8 +208,7 @@ auto find_optimal_swapchain_params(GLFWwindow& window, VkPhysicalDevice phy, VkS
         }
     }
     if(params.extent.width == std::numeric_limits<uint32_t>::max()) {
-        auto fb = std::array<int, 2>();
-        glfwGetFramebufferSize(&window, &fb[0], &fb[1]);
+        auto        fb       = std::array<int, 2>{800, 600};
         const auto& caps     = support.caps;
         params.extent.width  = std::clamp<uint32_t>(fb[0], caps.minImageExtent.width, caps.maxImageExtent.width);
         params.extent.height = std::clamp<uint32_t>(fb[1], caps.minImageExtent.height, caps.maxImageExtent.height);
@@ -841,19 +853,8 @@ auto on_keyboard(GLFWwindow* window, int key, int scancode, int action, int mods
 #undef case
 }
 
-auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
+auto recreate_swapchain(Context& context) -> bool {
     PRINT("recreating swapchain");
-
-    // handle minimization
-    {
-        auto width  = 0;
-        auto height = 0;
-        glfwGetFramebufferSize(&window, &width, &height);
-        while(width == 0 || height == 0) {
-            glfwGetFramebufferSize(&window, &width, &height);
-            glfwWaitEvents();
-        }
-    }
 
     context.framebuffers.clear();
     context.swapchain_images.clear();
@@ -861,7 +862,7 @@ auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
 
     ensure(vkDeviceWaitIdle(context.device.get()) == VK_SUCCESS);
     const auto queue_indices = std::array{context.graphics_queue_index, context.present_queue_index};
-    unwrap(swapchain_params, find_optimal_swapchain_params(window, context.phy, context.surface.get()));
+    unwrap(swapchain_params, find_optimal_swapchain_params(context.phy, context.surface.get()));
     context.swapchain_params = swapchain_params;
     unwrap_mut(swapchain, create_swapchain(context.device.get(), context.surface.get(), queue_indices, context.swapchain_params));
     context.swapchain.reset(&swapchain);
@@ -882,18 +883,61 @@ auto recreate_swapchain(GLFWwindow& window, Context& context) -> bool {
     return true;
 }
 
-auto vulkan_main(GLFWwindow& window) -> bool {
+auto vulkan_main() -> bool {
+    // wayland
+    // connect to display
+    auto display = towl::Display();
+
+    // bind interfaces
+    auto registry           = towl::Registry(display.get_registry());
+    auto compositor_binder  = towl::CompositorBinder(4);
+    auto xdg_wm_base_binder = towl::XDGWMBaseBinder(2);
+    registry.set_binders({&compositor_binder, &xdg_wm_base_binder});
+    display.roundtrip();
+    ensure(!compositor_binder.interfaces.empty());
+    ensure(!xdg_wm_base_binder.interfaces.empty());
+
+    // get surface from compositor
+    auto surface_callbacks = towl::SurfaceCallbacks();
+    auto compositor        = std::bit_cast<towl::Compositor*>(compositor_binder.interfaces[0].get());
+    auto surface           = compositor->create_surface();
+    surface.init(&surface_callbacks);
+
+    // create xdg_surface and xdg_toplevel
+    auto xdg_surface_callback = towl::XDGSurfaceCallbacks();
+    auto wmbase               = std::bit_cast<towl::XDGWMBase*>(xdg_wm_base_binder.interfaces[0].get());
+    auto xdg_surface          = wmbase->create_xdg_surface(surface.native());
+    xdg_surface.init(&xdg_surface_callback);
+    auto xdg_toplevel_callbacks = towl::XDGToplevelCallbacks();
+    auto xdg_toplevel           = xdg_surface.create_xdg_toplevel();
+    xdg_toplevel.init(&xdg_toplevel_callbacks);
+
+    // then commit surface changes
+    surface.commit();
+
+    display.roundtrip();
+
+    // vulkan
     auto context = Context();
 
-    glfwSetWindowUserPointer(&window, &context);
-    glfwSetFramebufferSizeCallback(&window, on_window_resize);
-    glfwSetKeyCallback(&window, on_keyboard);
+    // glfwSetWindowUserPointer(&window, &context);
+    // glfwSetFramebufferSizeCallback(&window, on_window_resize);
+    // glfwSetKeyCallback(&window, on_keyboard);
 
     {
         unwrap_mut(instance, create_instance());
         context.instance.reset(&instance);
     }
-    ensure(glfwCreateWindowSurface(context.instance.get(), &window, nullptr, std::inout_ptr(context.surface)) == VK_SUCCESS);
+    {
+
+        vk_args(vkCreateWaylandSurfaceKHR(context.instance.get(), &info, nullptr, std::inout_ptr(context.surface)),
+                (VkWaylandSurfaceCreateInfoKHR{
+                    .sType   = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+                    .display = display.native(),
+                    .surface = surface.native(),
+                }));
+        // ensure(glfwCreateWindowSurface(context.instance.get(), &window, nullptr, std::inout_ptr(context.surface)) == VK_SUCCESS);
+    }
     {
         unwrap_mut(phy, pickup_phy(context.instance.get(), context.surface.get()));
         context.phy = &phy;
@@ -912,7 +956,7 @@ auto vulkan_main(GLFWwindow& window) -> bool {
         context.device.reset(&device);
     }
     {
-        unwrap(swapchain_params, find_optimal_swapchain_params(window, context.phy, context.surface.get()));
+        unwrap(swapchain_params, find_optimal_swapchain_params(context.phy, context.surface.get()));
         context.swapchain_params = swapchain_params;
     }
     {
@@ -1103,102 +1147,107 @@ auto vulkan_main(GLFWwindow& window) -> bool {
     auto count   = 0uz;
     auto eye_pos = glm::vec3(1.0f, 0.0f, 2.0f);
 
-    while(!glfwWindowShouldClose(&window)) {
-        glfwPollEvents();
+    PRINT("displatch");
+    surface.commit();
+    display.roundtrip();
+loop:
+    PRINT("wayland loop");
+    // glfwPollEvents();
 
-        constexpr auto uint64_max = std::numeric_limits<uint64_t>::max();
+    constexpr auto uint64_max = std::numeric_limits<uint64_t>::max();
 
-        // wait for previous command completion
-        const auto current_frame = uint32_t(count % max_frames_in_flight);
-        const auto fence         = context.in_flight_fences[current_frame].get();
-        ensure(vkWaitForFences(context.device.get(), 1, &fence, VK_TRUE, uint64_max) == VK_SUCCESS);
+    // wait for previous command completion
+    const auto current_frame = uint32_t(count % max_frames_in_flight);
+    const auto fence         = context.in_flight_fences[current_frame].get();
+    ensure(vkWaitForFences(context.device.get(), 1, &fence, VK_TRUE, uint64_max) == VK_SUCCESS);
 
-        // acquire image from swapchain
-        auto image_index = uint32_t();
-        if(const auto ret = vkAcquireNextImageKHR(context.device.get(), context.swapchain.get(), uint64_max, context.image_avail_semaphores[current_frame].get(), VK_NULL_HANDLE, &image_index); ret == VK_ERROR_OUT_OF_DATE_KHR) {
-            ensure(recreate_swapchain(window, context));
-            continue;
-        } else {
-            ensure(ret == VK_SUCCESS || ret == VK_SUBOPTIMAL_KHR, "result={:x}", uint32_t(ret));
-        }
-
-        ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
-
-        /// update position
-        for(const auto e : std::array{
-                std::tuple(context.key_a, context.key_d, &eye_pos.x),
-                std::tuple(context.key_w, context.key_s, &eye_pos.y),
-                std::tuple(context.key_q, context.key_e, &eye_pos.z),
-            }) {
-            if(std::get<0>(e)) {
-                *std::get<2>(e) -= context.key_shift ? 1 : 0.1;
-            }
-            if(std::get<1>(e)) {
-                *std::get<2>(e) += context.key_shift ? 1 : 0.1;
-            }
-        }
-        std::println("pos={},{},{}", eye_pos.x, eye_pos.y, eye_pos.z);
-
-        // update transform
-        const auto time   = count / 60.0f * 0;
-        const auto aspect = 1.0f * context.swapchain_params.extent.width / context.swapchain_params.extent.height;
-
-        auto ubo  = UniformBufferObject();
-        ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.view  = glm::lookAt(eye_pos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
-        ubo.proj[1][1] *= -1;
-        std::memcpy(uniform_buffers[current_frame].mapping.ptr, &ubo, sizeof(ubo));
-
-        // fill command buffer
-        ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
-        ensure(record_command_buffer({
-            .pipeline        = context.pipeline.get(),
-            .render_pass     = context.render_pass.get(),
-            .vertex_buffer   = vertex_buffer.buffer.get(),
-            .index_buffer    = index_buffer.buffer.get(),
-            .framebuffer     = context.framebuffers[image_index].get(),
-            .extent          = context.swapchain_params.extent,
-            .command_buffer  = context.command_buffers[current_frame],
-            .pipeline_layout = context.pipeline_layout.get(),
-            .desc_set        = context.desc_sets[current_frame],
-            .indices_count   = uint32_t(indices.size()),
-        }));
-        // submit command
-        const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
-        const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
-        const auto signal_semaphores = std::array{context.render_finished_semaphores[current_frame].get()};
-        vk_args(vkQueueSubmit(graphics_queue, 1, &info, context.in_flight_fences[current_frame].get()),
-                (VkSubmitInfo{
-                    .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                    .waitSemaphoreCount   = 1,
-                    .pWaitSemaphores      = wait_semaphores.data(),
-                    .pWaitDstStageMask    = wait_stages.data(),
-                    .commandBufferCount   = 1,
-                    .pCommandBuffers      = &context.command_buffers[current_frame],
-                    .signalSemaphoreCount = 1,
-                    .pSignalSemaphores    = signal_semaphores.data(),
-                }));
-
-        // present rendered image
-        const auto swapchains   = std::array{context.swapchain.get()};
-        const auto present_info = VkPresentInfoKHR{
-            .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores    = signal_semaphores.data(),
-            .swapchainCount     = 1,
-            .pSwapchains        = swapchains.data(),
-            .pImageIndices      = &image_index,
-        };
-
-        if(const auto ret = vkQueuePresentKHR(present_queue, &present_info); ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR || context.window_resized) {
-            ensure(recreate_swapchain(window, context));
-            context.window_resized = false;
-        } else {
-            ensure(ret == VK_SUCCESS, "result={:x}", uint32_t(ret));
-        }
-        count += 1;
+    // acquire image from swapchain
+    auto image_index = uint32_t();
+    if(const auto ret = vkAcquireNextImageKHR(context.device.get(), context.swapchain.get(), uint64_max, context.image_avail_semaphores[current_frame].get(), VK_NULL_HANDLE, &image_index); ret == VK_ERROR_OUT_OF_DATE_KHR) {
+        ensure(recreate_swapchain(context));
+        goto loop;
+    } else {
+        ensure(ret == VK_SUCCESS || ret == VK_SUBOPTIMAL_KHR, "result={:x}", uint32_t(ret));
     }
+
+    ensure(vkResetFences(context.device.get(), 1, &fence) == VK_SUCCESS);
+
+    /// update position
+    for(const auto e : std::array{
+            std::tuple(context.key_a, context.key_d, &eye_pos.x),
+            std::tuple(context.key_w, context.key_s, &eye_pos.y),
+            std::tuple(context.key_q, context.key_e, &eye_pos.z),
+        }) {
+        if(std::get<0>(e)) {
+            *std::get<2>(e) -= context.key_shift ? 1 : 0.1;
+        }
+        if(std::get<1>(e)) {
+            *std::get<2>(e) += context.key_shift ? 1 : 0.1;
+        }
+    }
+    std::println("pos={},{},{}", eye_pos.x, eye_pos.y, eye_pos.z);
+
+    // update transform
+    const auto time   = count / 60.0f * 0;
+    const auto aspect = 1.0f * context.swapchain_params.extent.width / context.swapchain_params.extent.height;
+
+    auto ubo  = UniformBufferObject();
+    ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.view  = glm::lookAt(eye_pos, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    ubo.proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
+    ubo.proj[1][1] *= -1;
+    std::memcpy(uniform_buffers[current_frame].mapping.ptr, &ubo, sizeof(ubo));
+
+    // fill command buffer
+    ensure(vkResetCommandBuffer(context.command_buffers[current_frame], 0) == VK_SUCCESS);
+    ensure(record_command_buffer({
+        .pipeline        = context.pipeline.get(),
+        .render_pass     = context.render_pass.get(),
+        .vertex_buffer   = vertex_buffer.buffer.get(),
+        .index_buffer    = index_buffer.buffer.get(),
+        .framebuffer     = context.framebuffers[image_index].get(),
+        .extent          = context.swapchain_params.extent,
+        .command_buffer  = context.command_buffers[current_frame],
+        .pipeline_layout = context.pipeline_layout.get(),
+        .desc_set        = context.desc_sets[current_frame],
+        .indices_count   = uint32_t(indices.size()),
+    }));
+    // submit command
+    const auto wait_semaphores   = std::array{context.image_avail_semaphores[current_frame].get()};
+    const auto wait_stages       = std::array{VkPipelineStageFlags(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)};
+    const auto signal_semaphores = std::array{context.render_finished_semaphores[current_frame].get()};
+    vk_args(vkQueueSubmit(graphics_queue, 1, &info, context.in_flight_fences[current_frame].get()),
+            (VkSubmitInfo{
+                .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .waitSemaphoreCount   = 1,
+                .pWaitSemaphores      = wait_semaphores.data(),
+                .pWaitDstStageMask    = wait_stages.data(),
+                .commandBufferCount   = 1,
+                .pCommandBuffers      = &context.command_buffers[current_frame],
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores    = signal_semaphores.data(),
+            }));
+
+    // present rendered image
+    const auto swapchains   = std::array{context.swapchain.get()};
+    const auto present_info = VkPresentInfoKHR{
+        .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores    = signal_semaphores.data(),
+        .swapchainCount     = 1,
+        .pSwapchains        = swapchains.data(),
+        .pImageIndices      = &image_index,
+    };
+
+    if(const auto ret = vkQueuePresentKHR(present_queue, &present_info); ret == VK_ERROR_OUT_OF_DATE_KHR || ret == VK_SUBOPTIMAL_KHR || context.window_resized) {
+        ensure(recreate_swapchain(context));
+        context.window_resized = false;
+    } else {
+        ensure(ret == VK_SUCCESS, "result={:x}", uint32_t(ret));
+    }
+    count += 1;
+    display.roundtrip();
+    goto loop;
 
     ensure(vkDeviceWaitIdle(context.device.get()) == VK_SUCCESS);
 
@@ -1207,12 +1256,12 @@ auto vulkan_main(GLFWwindow& window) -> bool {
 } // namespace
 
 auto main() -> int {
-    ensure(glfwInit() == GLFW_TRUE);
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // ensure(glfwInit() == GLFW_TRUE);
+    // glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     // glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-    unwrap_mut(window, glfwCreateWindow(800, 600, "vk", nullptr, nullptr));
-    ensure(vulkan_main(window));
-    glfwDestroyWindow(&window);
-    glfwTerminate();
+    // unwrap_mut(window, glfwCreateWindow(800, 600, "vk", nullptr, nullptr));
+    ensure(vulkan_main());
+    // glfwDestroyWindow(&window);
+    // glfwTerminate();
     return 0;
 }
